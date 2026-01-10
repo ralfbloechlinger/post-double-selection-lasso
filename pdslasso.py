@@ -40,6 +40,7 @@ class PDSLasso:
         y: str,
         d: str,
         control_cols: list[str] | None = None,
+        control_always_include: list[str] | str | None = None,
         lasso_penalty_cv: bool = False,
         penalty_c: float = 1.1,
         penalty_gamma: float = 0.05,
@@ -53,6 +54,9 @@ class PDSLasso:
             d: Column name for the treatment variable.
             control_cols: Column names for candidate controls. If None, fit OLS
                 with only the treatment variable.
+            control_always_include: Column names for controls that should always be
+                included in the final OLS step (I3 in the paper). A single column
+                name can be passed as a string.
             lasso_penalty_cv: If True, use cross-validation to select the Lasso
                 penalty; otherwise use the parametric penalty from Belloni et al.
             penalty_c: Positive constant for the parametric penalty formula.
@@ -67,10 +71,19 @@ class PDSLasso:
         self.y = y 
         self.d = d
         self.control_cols = control_cols
+        if control_always_include is None:
+            self.control_always_include = []
+        elif isinstance(control_always_include, str):
+            self.control_always_include = [control_always_include]
+        else:
+            self.control_always_include = list(control_always_include)
         self.lasso_penalty = lasso_penalty_cv
         self.penalty_c = penalty_c
         self.penalty_gamma = penalty_gamma
         self.penalty_sigma = penalty_sigma
+
+        if self.y in self.control_always_include or self.d in self.control_always_include:
+            raise ValueError("control_always_include cannot contain the outcome or treatment variable.")
 
     def __repr__(self) -> str:
         repr_str = f"PDS-Lasso class with dependent variable {self.y}, variable of interest {self.d}"
@@ -135,25 +148,38 @@ class PDSLasso:
         data = self.prep_data()
         y_vec = data.y
         d_vec = data.d
+        control_always_include = list(self.control_always_include)
 
         # no controls => simple OLS
         if self.control_cols is None:
-            selected_conts = None
-            selected_vars = [self.d]
+            selected_conts = control_always_include
+            selected_vars = [self.d] + selected_conts
 
         else:
-            X_control = data.X
+            # controls for lasso (excluding always-include controls)
+            lasso_cols = [col for col in self.control_cols if col not in control_always_include]
+            X_lasso = data.X[lasso_cols]
 
             # Lasso 1: treatment indicator on all other controls
-            lasso_1, selected_cols_d_on_X = self._run_lasso(X_ctrl=X_control, y_vec=d_vec)
+            if lasso_cols:
+                lasso_1, selected_cols_d_on_X = self._run_lasso(X_ctrl=X_lasso, y_vec=d_vec)
+                # Lasso 2: outcome on all other controls
+                lasso_2, selected_cols_y_on_X = self._run_lasso(X_ctrl=X_lasso, y_vec=y_vec)
+            else:
+                lasso_1 = None
+                lasso_2 = None
+                selected_cols_d_on_X = []
+                selected_cols_y_on_X = []
             # Lasso 2: outcome on all other controls
-            lasso_2, selected_cols_y_on_X = self._run_lasso(X_ctrl=X_control, y_vec=y_vec)
             
             self.first_stage_lasso = lasso_1
             self.second_stage_lasso = lasso_2 
 
             # selected controls as union of both sets of controls
-            selected_conts = list(set(selected_cols_d_on_X + selected_cols_y_on_X))
+            selected_conts = []
+            for col in selected_cols_d_on_X + selected_cols_y_on_X + control_always_include:
+                if col not in selected_conts:
+                    selected_conts.append(col)
             selected_vars = [self.d] + selected_conts
 
         # final matrix of X: variable of interest plus selected contrs

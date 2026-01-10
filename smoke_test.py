@@ -5,11 +5,32 @@ from sim_data import simulate_pds_data
 
 def main():
     df, _ = simulate_pds_data(n=1500, p=30, true_effect=2.0, random_seed=0)
+
+    print("Paper penalty loading -------------")
     model = PDSLasso(
         data=df,
         y="y",
         d="d",
         lasso_penalty_cv=False,
+        control_cols=[c for c in df.columns if c.startswith("x")],
+    )
+    results = model.fit()
+
+    if model.selected_controls is None:
+        raise RuntimeError("Expected selected controls, got None.")
+    if not hasattr(results, "params"):
+        raise RuntimeError("Expected statsmodels results with params.")
+
+    print("OK: fitted model with", len(model.selected_controls), "selected controls.")
+    print("Treatment coefficient:", results.params["d"])
+
+    print("\nCross-validation penalty loading and always include -------------")
+    model = PDSLasso(
+        data=df,
+        y="y",
+        d="d",
+        lasso_penalty_cv=True,
+        control_always_include="x11",
         control_cols=[c for c in df.columns if c.startswith("x")],
     )
     results = model.fit()
