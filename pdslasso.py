@@ -1,12 +1,39 @@
+"""Post-double-selection Lasso estimator for a single treatment effect.
+
+Implements the procedure described in Belloni, Chernozhukov, and Hansen (2014)
+to select controls via two Lasso fits and then estimate the treatment effect
+with OLS using heteroskedasticity-robust (HC1) standard errors.
+
+Algorithm overview:
+1) Lasso: d on X to select controls predictive of treatment.
+2) Lasso: y on X to select controls predictive of outcome.
+3) OLS: y on d and the union of selected controls.
+
+Example:
+    from pdslasso import PDSLasso
+    est = PDSLasso(data=df, y="y", d="d", control_cols=["x0", "x1"])
+    res = est.fit()
+"""
+
 import math
+from typing import NamedTuple
+
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import Lasso, LassoCV
 from sklearn.preprocessing import StandardScaler
 import statsmodels.api as sm
+from statsmodels.regression.linear_model import RegressionResultsWrapper
+
+
+class PDSData(NamedTuple):
+    y: pd.Series
+    d: pd.Series
+    X: pd.DataFrame | None
 
 
 class PDSLasso:
+    """Post-double-selection Lasso estimator for a single treatment effect."""
     def __init__(
         self,
         data: pd.DataFrame,
@@ -18,6 +45,24 @@ class PDSLasso:
         penalty_gamma: float = 0.05,
         penalty_sigma: float | None = None,
     ):
+        """Initialize the estimator with data columns and penalty settings.
+
+        Args:
+            data: Input DataFrame containing outcome, treatment, and controls.
+            y: Column name for the outcome variable.
+            d: Column name for the treatment variable.
+            control_cols: Column names for candidate controls. If None, fit OLS
+                with only the treatment variable.
+            lasso_penalty_cv: If True, use cross-validation to select the Lasso
+                penalty; otherwise use the parametric penalty from Belloni et al.
+            penalty_c: Positive constant for the parametric penalty formula.
+            penalty_gamma: Value in (0, 1) for the parametric penalty formula.
+            penalty_sigma: Optional fixed sigma for the parametric penalty. If
+                None, sigma is estimated from the response.
+
+        Raises:
+            KeyError: If any of y, d, or control_cols are missing from data.
+        """
         self.data = data
         self.y = y 
         self.d = d
@@ -27,15 +72,16 @@ class PDSLasso:
         self.penalty_gamma = penalty_gamma
         self.penalty_sigma = penalty_sigma
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         repr_str = f"PDS-Lasso class with dependent variable {self.y}, variable of interest {self.d}"
         return repr_str
     
-    def prep_data(self):
-         if self.control_cols is None:
-            return (self.data[self.y], self.data[self.d])
-         else:
-            return (self.data[self.y], self.data[self.d], self.data[self.control_cols])
+    def prep_data(self) -> PDSData:
+        """Prepare and return the response, treatment, and optional controls."""
+        y_vec = self.data[self.y]
+        d_vec = self.data[self.d]
+        X_ctrl = None if self.control_cols is None else self.data[self.control_cols]
+        return PDSData(y=y_vec, d=d_vec, X=X_ctrl)
          
 
     def _estimate_sigma(self, y_vec: np.ndarray | pd.Series) -> float:
@@ -75,17 +121,28 @@ class PDSLasso:
 
         return lasso_fit, selected
     
-    def fit(self):
+    def fit(self) -> RegressionResultsWrapper:
+        """Fit the post-double-selection model and return the final regression.
+
+        Returns:
+            Statsmodels OLS results with HC1 standard errors.
+
+        Raises:
+            ValueError: If penalty settings are invalid when using the parametric
+                penalty (see _run_lasso).
+        """
+
+        data = self.prep_data()
+        y_vec = data.y
+        d_vec = data.d
 
         # no controls => simple OLS
         if self.control_cols is None:
-            y_vec, d_vec = self.prep_data()
-            fin_reg = sm.OLS(y_vec, d_vec)
             selected_conts = None
             selected_vars = [self.d]
 
         else:
-            y_vec, d_vec, X_control = self.prep_data()
+            X_control = data.X
 
             # Lasso 1: treatment indicator on all other controls
             lasso_1, selected_cols_d_on_X = self._run_lasso(X_ctrl=X_control, y_vec=d_vec)

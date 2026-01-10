@@ -6,6 +6,7 @@ A simple Python implementation of the post-double selection LASSO estimator for 
 
 - Post-double selection LASSO for partially linear models with a minimal class-based interface
 - Uses `LassoCV` from `scikit-learn` for the two selection steps  
+- Penalty loading ($\lambda$) based on the parametric choice in Belloni, Chernozhukov, and Hansen (2014) or CV
 - Uses `statsmodels.api.OLS` for the final unpenalized regression  
 
 
@@ -25,7 +26,8 @@ model = PDSLasso(
     data=df,
     y="outcome_var",
     d="treatment_var",
-    control_cols=["x1", "x2", "x3", "x4"]
+    control_cols=["x1", "x2", "x3", "x4"],
+    lasso_penalty="paper"
 )
 
 results = model.fit()
