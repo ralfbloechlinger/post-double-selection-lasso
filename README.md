@@ -5,9 +5,14 @@ A simple Python implementation of the post-double selection LASSO estimator for 
 ## Features
 
 - Post-double selection LASSO for partially linear models with a minimal class-based interface
-- Uses `LassoCV` from `scikit-learn` for the two selection steps  
-- Penalty loading ($\lambda$) based on the parametric choice in Belloni, Chernozhukov, and Hansen (2014) or CV
+- Uses `LassoCV` or `Lasso' from `scikit-learn` for the two selection steps  
+- Penalisation hyperparameter ($\lambda$) based on the parametric choice in Belloni, Chernozhukov, and Hansen (2014) or CV
 - Uses `statsmodels.api.OLS` for the final unpenalized regression  
+- Allows for partialling out of fixed-effects (as categortical variables) and selected, always-included controls
+
+
+## Open Issues: 
+- Include "feasible lasso" (optimal penalty-term loadings) from paper 
 
 
 ## Requirements
