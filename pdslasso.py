@@ -5,8 +5,8 @@ to select controls via two Lasso fits and then estimate the treatment effect
 with OLS using heteroskedasticity-robust (HC1) standard errors.
 
 Algorithm overview:
-1) Lasso: d on X to select controls predictive of treatment.
-2) Lasso: y on X to select controls predictive of outcome.
+1) Feasible Lasso: d on X with penalty loadings to select controls predictive of treatment.
+2) Feasible Lasso: y on X with penalty loadings to select controls predictive of outcome.
 3) OLS: y on d and the union of selected controls.
 
 Example:
@@ -16,12 +16,12 @@ Example:
 """
 
 import math
+from statistics import NormalDist
 from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import Lasso, LassoCV
-from sklearn.preprocessing import StandardScaler
 import statsmodels.api as sm
 from statsmodels.regression.linear_model import RegressionResultsWrapper
 
@@ -46,6 +46,9 @@ class PDSLasso:
         penalty_c: float = 1.1,
         penalty_gamma: float = 0.05,
         penalty_sigma: float | None = None,
+        feasible_lasso_max_iter: int = 6,
+        feasible_lasso_tol: float = 1e-4,
+        feasible_lasso_eps: float = 1e-12,
     ):
         """Initialize the estimator with data columns and penalty settings.
 
@@ -66,8 +69,11 @@ class PDSLasso:
                 penalty; otherwise use the parametric penalty from Belloni et al.
             penalty_c: Positive constant for the parametric penalty formula.
             penalty_gamma: Value in (0, 1) for the parametric penalty formula.
-            penalty_sigma: Optional fixed sigma for the parametric penalty. If
-                None, sigma is estimated from the response.
+            penalty_sigma: Optional fixed sigma for the parametric penalty.
+                Currently unused with feasible Lasso; retained for compatibility.
+            feasible_lasso_max_iter: Maximum iterations for feasible Lasso loadings.
+            feasible_lasso_tol: Tolerance for feasible Lasso loading convergence.
+            feasible_lasso_eps: Floor to avoid zero penalty loadings.
 
         Raises:
             KeyError: If any of y, d, or control_cols are missing from data.
@@ -87,6 +93,9 @@ class PDSLasso:
         self.penalty_c = penalty_c
         self.penalty_gamma = penalty_gamma
         self.penalty_sigma = penalty_sigma
+        self.feasible_lasso_max_iter = feasible_lasso_max_iter
+        self.feasible_lasso_tol = feasible_lasso_tol
+        self.feasible_lasso_eps = feasible_lasso_eps
 
         if self.y in self.control_always_include or self.d in self.control_always_include:
             raise ValueError("control_always_include cannot contain the outcome or treatment variable.")
@@ -179,6 +188,29 @@ class PDSLasso:
             return float(self.penalty_sigma)
         return float(np.std(y_vec, ddof=1))
 
+    def _penalty_level(self, n_obs: int, n_ctrl: int) -> float:
+        """Compute parametric penalty level from Belloni et al. (2014), eq. (2.12)."""
+        if not 0 < self.penalty_gamma < 1:
+            raise ValueError("penalty_gamma must be between 0 and 1.")
+        if self.penalty_c <= 0:
+            raise ValueError("penalty_c must be positive.")
+        if n_ctrl <= 0:
+            raise ValueError("n_ctrl must be positive.")
+        quantile = NormalDist().inv_cdf(1 - self.penalty_gamma / (2 * n_ctrl))
+        return 2 * self.penalty_c * math.sqrt(n_obs) * quantile
+
+    def _post_lasso_residuals(
+        self,
+        X_ctrl: np.ndarray,
+        y_vec: np.ndarray,
+        selected_idx: np.ndarray,
+    ) -> np.ndarray:
+        """Compute post-Lasso residuals without intercept on selected controls."""
+        if selected_idx.size == 0:
+            return y_vec
+        X_sel = X_ctrl[:, selected_idx]
+        coef, _, _, _ = np.linalg.lstsq(X_sel, y_vec, rcond=None)
+        return y_vec - X_sel @ coef
 
     def _run_lasso(
         self,
@@ -186,37 +218,58 @@ class PDSLasso:
         y_vec: np.ndarray | pd.Series,
         feature_names: list[str],
     ) -> tuple[Lasso | LassoCV, list[str]]:
-        """Run Lasso regression and return fitted model and selected controls (list of strings)."""
+        """Run feasible Lasso with penalty loadings and return fitted model and selected controls."""
+        X_mat = np.asarray(X_ctrl)
+        y_arr = np.asarray(y_vec).ravel()
+        if X_mat.ndim == 1:
+            X_mat = X_mat.reshape(-1, 1)
+        n_obs, n_ctrl = X_mat.shape
+        if n_ctrl == 0:
+            return Lasso(alpha=0.0), []
 
-        # standardise controls for lasso
-        X_ctrl_std = StandardScaler().fit_transform(X_ctrl)
+        # initialize loadings using residualized y
+        loadings = np.sqrt(np.mean((X_mat ** 2) * (y_arr[:, None] ** 2), axis=0))
+        loadings = np.maximum(loadings, self.feasible_lasso_eps)
 
-        # use CV for choice of penalty level lambda
-        if self.lasso_penalty:
-            lasso_fit = LassoCV().fit(X=X_ctrl_std, y=y_vec)
+        last_fit: Lasso | LassoCV | None = None
+        last_beta = np.zeros(n_ctrl)
+        for _ in range(self.feasible_lasso_max_iter):
+            X_scaled = X_mat / loadings
+            if self.lasso_penalty:
+                lasso_fit = LassoCV(fit_intercept=False, max_iter=10000).fit(
+                    X=X_scaled,
+                    y=y_arr,
+                )
+                theta_hat = lasso_fit.coef_
+            else:
+                penalty_level = self._penalty_level(n_obs, n_ctrl)
+                alpha = penalty_level / (2 * n_obs)
+                lasso_fit = Lasso(alpha=alpha, fit_intercept=False, max_iter=10000).fit(
+                    X=X_scaled,
+                    y=y_arr,
+                )
+                theta_hat = lasso_fit.coef_
 
-        # use parametric penalty level from Belloni et al. (2014)
-        else:
-            n_obs, n_ctrl = X_ctrl_std.shape
-            if not 0 < self.penalty_gamma < 1:
-                raise ValueError("penalty_gamma must be between 0 and 1.")
-            if self.penalty_c <= 0:
-                raise ValueError("penalty_c must be positive.")
-            sigma_hat = self._estimate_sigma(y_vec)
-            if sigma_hat <= 0:
-                raise ValueError("Estimated sigma must be positive.")
-            # Parametric penalty level from Belloni et al. (2014), eq. (2.11).
-            penalty_level = 2 * self.penalty_c * sigma_hat * math.sqrt(
-                2 * n_obs * math.log(2 * n_ctrl / self.penalty_gamma)
-            )
-            alpha = penalty_level / (2 * n_obs)
-            lasso_fit = Lasso(alpha=alpha, max_iter=10000).fit(X=X_ctrl_std, y=y_vec)
+            beta_hat = theta_hat / loadings
+            selected_idx = np.flatnonzero(beta_hat != 0)
+            s_k = selected_idx.size
+            resid = self._post_lasso_residuals(X_mat, y_arr, selected_idx)
 
-        # extract coefficients and selected controls
-        coefs = lasso_fit.coef_
-        selected = [col for col, c in zip(feature_names, coefs) if c != 0]
+            loadings_new = np.sqrt(np.mean((X_mat ** 2) * (resid[:, None] ** 2), axis=0))
+            loadings_new *= math.sqrt(n_obs / max(n_obs - s_k, 1))
+            loadings_new = np.maximum(loadings_new, self.feasible_lasso_eps)
 
-        return lasso_fit, selected
+            last_fit = lasso_fit
+            last_beta = beta_hat
+            if np.max(np.abs(loadings_new - loadings)) <= self.feasible_lasso_tol:
+                loadings = loadings_new
+                break
+            loadings = loadings_new
+
+        selected = [col for col, c in zip(feature_names, last_beta) if c != 0]
+        if last_fit is None:
+            last_fit = Lasso(alpha=0.0, fit_intercept=False)
+        return last_fit, selected
     
     def fit(self) -> RegressionResultsWrapper:
         """Fit the post-double-selection model and return the final regression.
