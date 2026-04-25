@@ -115,6 +115,10 @@ class PDSLasso:
         if self.control_cols is not None and any(
             fe_col in self.control_cols for fe_col in self.fixed_effect_col):
             raise ValueError("fixed_effect_col should not be listed in control_cols; pass it separately.")
+        
+        self.cov_type = cov_type
+        self.cluster_cov = cluster_cov
+
 
     def __repr__(self) -> str:
         repr_str = f"PDS-Lasso class with dependent variable {self.y}, variable of interest {self.d}"
