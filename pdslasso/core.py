@@ -41,7 +41,7 @@ class PDSLasso:
         d: str,
         control_cols: list[str] | None = None,
         control_always_include: list[str] | str | None = None,
-        fixed_effect_col: str | None = None,
+        fixed_effect_col: str | list[str] | None = None,
         lasso_penalty_cv: bool = False,
         penalty_c: float = 1.1,
         penalty_gamma: float = 0.05,
@@ -87,7 +87,11 @@ class PDSLasso:
         elif isinstance(control_always_include, str):
             self.control_always_include = [control_always_include]
         else:
-            self.control_always_include = list(control_always_include)
+            self.control_always_include = control_always_include
+        if fixed_effect_col is None:
+            self.fixed_effect_col = []
+        elif isinstance(fixed_effect_col, str):
+            self.fixed_effect_col = [fixed_effect_col]
         self.fixed_effect_col = fixed_effect_col
         self.lasso_penalty = lasso_penalty_cv
         self.penalty_c = penalty_c
@@ -97,13 +101,16 @@ class PDSLasso:
         self.feasible_lasso_tol = feasible_lasso_tol
         self.feasible_lasso_eps = feasible_lasso_eps
 
-        if self.y in self.control_always_include or self.d in self.control_always_include:
+        if any(col in self.control_always_include for col in [self.y, self.d]):
             raise ValueError("control_always_include cannot contain the outcome or treatment variable.")
-        if self.fixed_effect_col in (self.y, self.d):
+        if any(col in [self.y, self.d] for col in self.fixed_effect_col):
             raise ValueError("fixed_effect_col cannot be the outcome or treatment variable.")
-        if self.fixed_effect_col in self.control_always_include:
+        if any(
+            fe_col in self.control_always_include for fe_col in self.fixed_effect_col
+        ):
             raise ValueError("fixed_effect_col should not be included in control_always_include.")
-        if self.control_cols is not None and self.fixed_effect_col in self.control_cols:
+        if self.control_cols is not None and any(
+            fe_col in self.control_cols for fe_col in self.fixed_effect_col):
             raise ValueError("fixed_effect_col should not be listed in control_cols; pass it separately.")
 
     def __repr__(self) -> str:
@@ -119,15 +126,23 @@ class PDSLasso:
 
     def _build_fixed_effects(self) -> pd.DataFrame | None:
         """
-        convert fixed effect column to one-hot-encoded DataFrame
+        Convert fixed effect column(s) to one-hot-encoded DataFrame.
         """
-        if self.fixed_effect_col is None:
+        if not self.fixed_effect_col:
             return None
-        fe_raw = self.data[self.fixed_effect_col]
-        fe_dummies = pd.get_dummies(fe_raw, prefix=self.fixed_effect_col, drop_first=True).astype(float)
-        if fe_dummies.shape[1] == 0:
+
+        all_fe_dummies = []
+        for fe_col_name in self.fixed_effect_col:
+            fe_raw = self.data[fe_col_name]
+            if not pd.api.types.is_categorical_dtype(fe_raw):
+                fe_raw = fe_raw.astype("category")
+            dummies = pd.get_dummies(fe_raw, prefix=fe_col_name, drop_first=True).astype(float)
+            if dummies.shape[1] > 0:
+                all_fe_dummies.append(dummies)
+
+        if not all_fe_dummies:
             return None
-        return fe_dummies
+        return pd.concat(all_fe_dummies, axis=1)
 
     def _build_partial_out_matrix(
         self,
