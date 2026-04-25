@@ -49,6 +49,8 @@ class PDSLasso:
         feasible_lasso_max_iter: int = 6,
         feasible_lasso_tol: float = 1e-4,
         feasible_lasso_eps: float = 1e-12,
+        cov_type: str | None = "HC1" ,
+        cluster_cov: str | None = None,
     ):
         """Initialize the estimator with data columns and penalty settings.
 
@@ -74,7 +76,8 @@ class PDSLasso:
             feasible_lasso_max_iter: Maximum iterations for feasible Lasso loadings.
             feasible_lasso_tol: Tolerance for feasible Lasso loading convergence.
             feasible_lasso_eps: Floor to avoid zero penalty loadings.
-
+            cov_type: Type of covariance matrix to use for inference.
+            cluster_cov: Optional column name for clustering variable for standard errors, overrides cov_type if provided.
         Raises:
             KeyError: If any of y, d, or control_cols are missing from data.
         """
@@ -92,7 +95,7 @@ class PDSLasso:
             self.fixed_effect_col = []
         elif isinstance(fixed_effect_col, str):
             self.fixed_effect_col = [fixed_effect_col]
-        self.fixed_effect_col = fixed_effect_col
+
         self.lasso_penalty = lasso_penalty_cv
         self.penalty_c = penalty_c
         self.penalty_gamma = penalty_gamma
@@ -361,7 +364,12 @@ class PDSLasso:
 
         # fit object
         fin_reg = sm.OLS(y_vec, X_final_vec)
-        fin_reg_fit = fin_reg.fit(cov_type="HC1")
+        if self.cluster_cov is not None:
+            fin_reg_fit = fin_reg.fit(cov_type="cluster", cov_kwds={"groups": data[self.cluster_cov]})
+        elif self.cov_type is not None:
+            fin_reg_fit = fin_reg.fit(cov_type=self.cov_type)
+        else:
+            fin_reg_fit = fin_reg.fit()
 
 
         self.final_regression = fin_reg_fit
