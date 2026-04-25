@@ -7,8 +7,32 @@ name = "pdslasso"
 version = "0.1.0"
 description = "Post-double-selection LASSO for treatment effects with high-dimensional controls"
 readme = "README.md"
-license = "MIT"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Ralf Bloechlinger" },
+]
 requires-python = ">=3.9"
+keywords = [
+    "lasso",
+    "econometrics",
+    "causal-inference",
+    "treatment-effects",
+    "high-dimensional-data",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Econometrics",
+]
 dependencies = [
     "numpy",
     "pandas",
@@ -20,7 +44,9 @@ dependencies = [
 dev = ["pytest"]
 
 [project.urls]
+Homepage = "https://github.com/ralfblochlinger/post-double-selection-lasso"
 Repository = "https://github.com/ralfblochlinger/post-double-selection-lasso"
+Issues = "https://github.com/ralfblochlinger/post-double-selection-lasso/issues"
 
 [tool.setuptools.packages.find]
 include = ["pdslasso*"]
