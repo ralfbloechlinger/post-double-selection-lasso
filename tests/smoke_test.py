@@ -1,6 +1,5 @@
 #!/usr/bin/env python
-from pdslasso import PDSLasso
-from sim_data import simulate_pds_data
+from pdslasso import PDSLasso, simulate_pds_data
 
 
 def main():

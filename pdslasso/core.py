@@ -154,7 +154,8 @@ class PDSLasso:
         fe_matrix: pd.DataFrame | None,
     ) -> pd.Series | pd.DataFrame | np.ndarray:
         """
-        Partial out fixed effects and always-include controls from values using OLS.
+        Partial out fixed effects and always-include controls from values using OLS. 
+        (controls must be included in fe matrix)
         Logic follows from Frisch-Waugh-Lovell.
         Values may be a matrix or vector (DataFrame, Series, or ndarray).
         """
@@ -231,8 +232,10 @@ class PDSLasso:
         loadings = np.sqrt(np.mean((X_mat ** 2) * (y_arr[:, None] ** 2), axis=0))
         loadings = np.maximum(loadings, self.feasible_lasso_eps)
 
+        # initialize now to handle 0 iteration case 
         last_fit: Lasso | LassoCV | None = None
-        last_beta = np.zeros(n_ctrl)
+        last_beta = np.zeros(n_ctrl) 
+        # iterate until loadings converge or max iterations are reached
         for _ in range(self.feasible_lasso_max_iter):
             X_scaled = X_mat / loadings
             if self.lasso_penalty:
@@ -251,7 +254,7 @@ class PDSLasso:
                 theta_hat = lasso_fit.coef_
 
             beta_hat = theta_hat / loadings
-            selected_idx = np.flatnonzero(beta_hat != 0)
+            selected_idx = np.flatnonzero(beta_hat)
             s_k = selected_idx.size
             resid = self._post_lasso_residuals(X_mat, y_arr, selected_idx)
 
@@ -332,10 +335,7 @@ class PDSLasso:
             self.second_stage_lasso = lasso_2 
 
             # selected controls as union of both sets of controls
-            selected_conts = []
-            for col in selected_cols_d_on_X + selected_cols_y_on_X + control_always_include:
-                if col not in selected_conts:
-                    selected_conts.append(col)
+            selected_conts = list(set(selected_cols_d_on_X + selected_cols_y_on_X + control_always_include))
             selected_vars = [self.d] + selected_conts
 
         # final matrix of X: variable of interest plus selected contrs

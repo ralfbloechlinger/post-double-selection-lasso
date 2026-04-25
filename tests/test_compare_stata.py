@@ -8,8 +8,10 @@ import pandas as pd
 from pdslasso import PDSLasso
 
 
-DATA_PATH = "data/pdslasso_sim.csv"
-STATA_RESULTS_PATH = "stata/pdslasso_results.csv"
+# Paths relative to the project root
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_PATH = os.path.join(_PROJECT_ROOT, "data", "pdslasso_sim.csv")
+STATA_RESULTS_PATH = os.path.join(_PROJECT_ROOT, "stata", "pdslasso_results.csv")
 COEF_TOL = 1e-3
 
 

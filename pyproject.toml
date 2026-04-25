@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdslasso"
+version = "0.1.0"
+description = "Post-double-selection LASSO for treatment effects with high-dimensional controls"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "statsmodels",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.urls]
+Repository = "https://github.com/ralfblochlinger/post-double-selection-lasso"
+
+[tool.setuptools.packages.find]
+include = ["pdslasso*"]
