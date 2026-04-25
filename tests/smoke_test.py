@@ -1,12 +1,12 @@
 #!/usr/bin/env python
-from pdslasso import PDSLasso, simulate_pds_data
+import pdslasso
 
 
 def main():
-    df, _ = simulate_pds_data(n=1500, p=30, true_effect=2.0, random_seed=0)
+    df, _ = pdslasso.sim_data.simulate_pds_data(n=1500, p=30, true_effect=2.0, random_seed=0)
 
     print("Paper penalty loading -------------")
-    model = PDSLasso(
+    model = pdslasso.PDSLasso(
         data=df,
         y="y",
         d="d",
@@ -24,7 +24,7 @@ def main():
     print("Treatment coefficient:", results.params["d"])
 
     print("\nCross-validation penalty loading and always include -------------")
-    model = PDSLasso(
+    model = pdslasso.PDSLasso(
         data=df,
         y="y",
         d="d",
@@ -43,7 +43,7 @@ def main():
     print("Treatment coefficient:", results.params["d"])
 
     print("\nFixed effects data generation -------------")
-    df_fe, _ = simulate_pds_data(
+    df_fe, _ = pdslasso.sim_data.simulate_pds_data(
         n=1500,
         p=30,
         true_effect=2.0,
@@ -52,7 +52,7 @@ def main():
         n_groups=12,
         fe_outcome_sd=4
     )
-    model = PDSLasso(
+    model = pdslasso.PDSLasso(
         data=df_fe,
         y="y",
         d="d",
@@ -74,7 +74,7 @@ def main():
 
     print("\nFalsely excluding Fe from construction -------------")
     df_fe = df_fe.copy().drop(columns=["fe"])
-    model = PDSLasso(
+    model = pdslasso.PDSLasso(
         data=df_fe,
         y="y",
         d="d",

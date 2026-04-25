@@ -2,7 +2,8 @@
 import numpy as np
 import pandas as pd
 
-from pdslasso import PDSLasso, simulate_pds_data
+from pdslasso import PDSLasso 
+from pdslasso.sim_data import simulate_pds_data
 
 
 def _make_signal_data(n: int = 500, seed: int = 123) -> pd.DataFrame:
