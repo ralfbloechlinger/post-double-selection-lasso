@@ -369,6 +369,9 @@ class PDSLasso:
         # fit object
         fin_reg = sm.OLS(y_vec, X_final_vec)
         if self.cluster_cov is not None:
+            # add assert that cluster col exists
+            if self.cluster_cov not in data.columns:
+                raise ValueError(f"Cluster column {self.cluster_cov} not found in data.")
             fin_reg_fit = fin_reg.fit(cov_type="cluster", cov_kwds={"groups": data[self.cluster_cov]})
         elif self.cov_type is not None:
             fin_reg_fit = fin_reg.fit(cov_type=self.cov_type)

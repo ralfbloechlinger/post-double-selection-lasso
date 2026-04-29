@@ -1,11 +1,8 @@
 # Feasible Lasso with penalty loadings (Belloni–Chernozhukov–Hansen, 2014)
 
-This document specifies an implementation-ready algorithm for the **feasible Lasso** (heteroskedasticity-robust Lasso
-with **iteratively estimated penalty loadings**) used in Belloni, Chernozhukov, and Hansen (2014),
-eq. (2.12) and Algorithm 1 in Appendix A.
+This document specifies an implementation-ready algorithm for the **feasible Lasso** (heteroskedasticity-robust Lasso with **iteratively estimated penalty loadings**) used in Belloni, Chernozhukov, and Hansen (2014), eq. (2.12) and Algorithm 1 in Appendix A.
 
-The algorithm below is written to integrate cleanly with the current `pdslasso.py` structure, where
-`y`, `d`, and the candidate controls `X` are **residualized** (“partialled out”) with respect to:
+The algorithm below is written to integrate cleanly with the current `pdslasso.py` structure, where `y`, `d`, and the candidate controls `X` are **residualized** (“partialled out”) with respect to: 
 - always-include controls, and
 - fixed effects (one-hot dummies),
 via Frisch–Waugh–Lovell before the Lasso steps.

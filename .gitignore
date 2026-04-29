@@ -20,3 +20,7 @@ venv/
 AGENTS.md
 GEMINI.md
 lit/
+ai_notes/gpt_changes_todo.md
+data/pdslasso_sim.csv
+data/pdslasso_sim_copy.csv
+
