@@ -3,9 +3,10 @@
 This document specifies an implementation-ready algorithm for the **feasible Lasso** (heteroskedasticity-robust Lasso with **iteratively estimated penalty loadings**) used in Belloni, Chernozhukov, and Hansen (2014), eq. (2.12) and Algorithm 1 in Appendix A.
 
 The algorithm below is written to integrate cleanly with the current `pdslasso.py` structure, where `y`, `d`, and the candidate controls `X` are **residualized** (“partialled out”) with respect to: 
+
 - always-include controls, and
 - fixed effects (one-hot dummies),
-via Frisch–Waugh–Lovell before the Lasso steps.
+  via Frisch–Waugh–Lovell before the Lasso steps.
 
 ---
 
@@ -25,6 +26,7 @@ $$
 $$
 
 where:
+
 - `λ` is the penalty level (same for all coefficients),
 - `ℓ_j` is the penalty loading for regressor `j` (estimated from the data).
 
@@ -39,6 +41,7 @@ $$
 $$
 
 where:
+
 - `c` corresponds to `penalty_c` (typical default 1.1),
 - `γ` corresponds to `penalty_gamma` (typical default 0.05),
 - `Φ^{-1}` is the standard normal quantile function.
@@ -85,6 +88,7 @@ $$
 $$
 
 Implementation details:
+
 - Let `loadings` be a length-`p` array.
 - Compute `X_scaled = X_ctrl / loadings` **columnwise**.
 - Fit `Lasso(alpha=lambda_/(2n), fit_intercept=False, max_iter=...)` to `(X_scaled, y_vec)`.
@@ -99,6 +103,7 @@ Implementation details:
 ### 4.1 Inputs and hyperparameters
 
 Inputs per Lasso step:
+
 - `y`: array shape `(n,)`
 - `X`: array shape `(n, p)`
 - `c, γ` (penalty hyperparameters)
@@ -114,7 +119,7 @@ In our integration, the clean choice is:
 
 - If the code already **residualized `y` and `X`** with respect to fixed effects and always-include controls,
   take residuals from `I0 = {}` on the residualized data, i.e.:
-
+  
   - `e0 = y` (since `y` is already partialled out)
   - `ℓ_{j,0} = sqrt( mean( X[:,j]^2 * e0^2 ) )`
 
@@ -129,6 +134,7 @@ For `k = 0, 1, ..., K-1`:
    `λ = 2*c*sqrt(n)*Phi^{-1}(1 - γ/(2p))`
 
 2) **Weighted Lasso via rescaling**  
+   
    - `X_scaled = X / ℓ_k` (columnwise)
    - `alpha = λ / (2n)`
    - Fit Lasso on `(X_scaled, y)` → `theta_hat`
@@ -137,37 +143,42 @@ For `k = 0, 1, ..., K-1`:
    - Let `s_k = |T_k|`
 
 3) **Post-Lasso (OLS refit on selected set)**  
+   
    - If `T_k` is empty: set `e_k = y`
    - Else:
      - Solve OLS on the original scale using only selected columns:
        `beta_pl = argmin_b || y - X_T b ||_2^2`
      - Residuals: `e_k = y - X_T @ beta_pl`
-
+   
    Notes:
+   
    - Since `y` and `X` are residualized in the PDS workflow, **do not add an intercept** in Post-Lasso.
    - Use `np.linalg.lstsq` (or statsmodels OLS without constant) for numerical robustness.
 
 4) **Update loadings with df correction**  
    Compute the raw loading update:
-
+   
    $$
    \tilde\ell_{j,k+1} = \sqrt{ \frac{1}{n}\sum_{i=1}^n x_{ij}^2 e_{k,i}^2 }.
    $$
-
+   
    Apply the degrees-of-freedom correction from Algorithm 1:
-
+   
    $$
    \ell_{j,k+1} = \tilde\ell_{j,k+1}\;\sqrt{\frac{n}{\max(n - s_k,\; 1)}}.
    $$
-
+   
    Then clip:
+   
    - `ℓ_{k+1} = np.maximum(ℓ_{k+1}, eps)`.
 
 5) **Check convergence**  
+   
    - Compute `delta = max_j |ℓ_{j,k+1} - ℓ_{j,k}|`.
    - If `delta <= ν`, stop and return `ℓ_{k+1}`.
 
 Output:
+
 - final loadings `ℓ_hat`
 - optionally: the final Lasso fit and selected set from the last iteration.
 
@@ -239,9 +250,11 @@ Then run **two feasible-Lasso selections**:
   → selected set `T_y`
 
 Union:
+
 - `T = T_d ∪ T_y ∪ always_include_controls`
 
 Final regression (unchanged from existing code):
+
 - OLS of **raw** `y` on **raw** `d` and selected controls (plus FE dummies),
   with `cov_type="HC1"`.
 
@@ -263,9 +276,9 @@ Final regression (unchanged from existing code):
 ## 7. Recommended defaults
 
 Good “paper-like” defaults:
+
 - `penalty_c = 1.1`
 - `penalty_gamma = 0.05`
 - `K = 6`
 - `nu = 1e-4` (or `1e-3` if you want fewer iterations)
 - `eps = 1e-12`
-

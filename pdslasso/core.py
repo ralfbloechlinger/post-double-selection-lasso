@@ -15,6 +15,11 @@ Example:
     res = est.fit()
 """
 
+
+# To-Do: for clustered SE, we also need to adjust the Lasso step? 
+# How implemented in other packages?
+# Notes in Belloni et al. (2014)? 
+
 import math
 from statistics import NormalDist
 from typing import NamedTuple
@@ -60,11 +65,13 @@ def _build_summary_with_fe_notes(
         "OLS with PDS-selected variables and full regressor set.",
         f"Standard errors and t statistics valid for the following variables only: {treatment_name}.",
     ]
+    # To-Do: actually count how many dummies were absorbed for each FE column and report that in the summary notes
+    # currently we only count number of dummies generated in OHE (but columns may be dropped due to multi-colinearity)
     for fe_col, n_dummies in fe_labels:
         if n_dummies > 0:
             extra_txt.append(f"Includes FE for {fe_col} ({n_dummies} absorbed dummies).")
         else:
-            extra_txt.append(f"Includes fixed effects for {fe_col}; no dummy coefficients shown.")
+            extra_txt.append(f"Fixed effect for {fe_col} dropped (0 absorbed dummies, single category).")
     summary.add_extra_txt(extra_txt)
     return summary
 
@@ -142,11 +149,16 @@ class PDSLasso:
         self.feasible_lasso_max_iter = feasible_lasso_max_iter
         self.feasible_lasso_tol = feasible_lasso_tol
         self.feasible_lasso_eps = feasible_lasso_eps
+        self.cov_type = cov_type
+        self.cluster_cov = cluster_cov
 
         # check that treatment is binary integer or boolean
         if not isinstance(self.data[self.d].dtype, pd.BooleanDtype) and not (self.data[self.d].dtype == int and set(self.data[self.d].unique()).issubset({0, 1})):
             raise ValueError("Treatment variable d must be binary (boolean or 0/1 integer).")
+        if isinstance(self.data[self.d].dtype, pd.BooleanDtype):
+            self.data[self.d] = self.data[self.d].astype(int)
 
+        # checks on column names and overlaps
         if any(col in self.control_always_include for col in [self.y, self.d]):
             raise ValueError("control_always_include cannot contain the outcome or treatment variable.")
         if any(col in [self.y, self.d] for col in self.fixed_effect_col):
@@ -159,8 +171,7 @@ class PDSLasso:
             fe_col in self.control_cols for fe_col in self.fixed_effect_col):
             raise ValueError("fixed_effect_col should not be listed in control_cols; pass it separately.")
         
-        self.cov_type = cov_type
-        self.cluster_cov = cluster_cov
+        
 
 
     def __repr__(self) -> str:
@@ -182,7 +193,7 @@ class PDSLasso:
             return None
 
         all_fe_dummies = []
-        for fe_col_name in self.fixed_effect_col:
+        for fe_col_name in self.fixed_effect_col: # fixed_effect_col is always a list
             fe_raw = self.data[fe_col_name]
             if not isinstance(fe_raw.dtype, pd.CategoricalDtype):
                 fe_raw = fe_raw.astype("category")
@@ -228,21 +239,25 @@ class PDSLasso:
             return values
         fe_design = sm.add_constant(fe_matrix, has_constant="add")
         design = fe_design.to_numpy()
+        
+        # convert values to numpy array with correct shape for least squares
         if isinstance(values, pd.Series):
             y_mat = values.to_numpy().reshape(-1, 1)
-            coef, _, _, _ = np.linalg.lstsq(design, y_mat, rcond=None)
-            resid = y_mat - design @ coef
-            return pd.Series(resid.ravel(), index=values.index, name=values.name)
-        if isinstance(values, pd.DataFrame):
+        elif isinstance(values, pd.DataFrame):
             y_mat = values.to_numpy()
-            coef, _, _, _ = np.linalg.lstsq(design, y_mat, rcond=None)
-            resid = y_mat - design @ coef
-            return pd.DataFrame(resid, index=values.index, columns=values.columns)
-        y_mat = np.asarray(values)
-        if y_mat.ndim == 1:
-            y_mat = y_mat.reshape(-1, 1)
+        else:
+            y_mat = np.asarray(values)
+            if y_mat.ndim == 1:
+                y_mat = y_mat.reshape(-1, 1)
+                
         coef, _, _, _ = np.linalg.lstsq(design, y_mat, rcond=None)
         resid = y_mat - design @ coef
+        
+        # return residuals in same format as input values
+        if isinstance(values, pd.Series):
+            return pd.Series(resid.ravel(), index=values.index, name=values.name)
+        if isinstance(values, pd.DataFrame):
+            return pd.DataFrame(resid, index=values.index, columns=values.columns)
         if resid.shape[1] == 1:
             return resid.ravel()
         return resid
@@ -294,6 +309,11 @@ class PDSLasso:
             return Lasso(alpha=0.0), []
 
         # initialize loadings using residualized y
+        # To-Do: check whether this makes sense? I think it works but only if we have some residualisation
+        # do we need to specially handle the case with no fixed effects or always-include controls? 
+        # In that case we would just be using the raw y, which seems wrong. 
+        # Instead simply "partial out" a constant?
+        # What does Belloni et al suggest as initial set of loadings?
         loadings = np.sqrt(np.mean((X_mat ** 2) * (y_arr[:, None] ** 2), axis=0))
         loadings = np.maximum(loadings, self.feasible_lasso_eps)
 
@@ -303,6 +323,7 @@ class PDSLasso:
         # iterate until loadings converge or max iterations are reached
         for _ in range(self.feasible_lasso_max_iter):
             X_scaled = X_mat / loadings
+            # Use CV to select alpha if lasso_penalty_cv is True, otherwise use parametric penalty level
             if self.lasso_penalty:
                 lasso_fit = LassoCV(fit_intercept=False, max_iter=10000).fit(
                     X=X_scaled,
@@ -324,7 +345,7 @@ class PDSLasso:
             resid = self._post_lasso_residuals(X_mat, y_arr, selected_idx)
 
             loadings_new = np.sqrt(np.mean((X_mat ** 2) * (resid[:, None] ** 2), axis=0))
-            loadings_new *= math.sqrt(n_obs / max(n_obs - s_k, 1))
+            loadings_new *= math.sqrt(n_obs / max(n_obs - s_k, 1)) # df correction
             loadings_new = np.maximum(loadings_new, self.feasible_lasso_eps)
 
             last_fit = lasso_fit
@@ -343,7 +364,7 @@ class PDSLasso:
         """Fit the post-double-selection model and return the final regression.
 
         Returns:
-            Statsmodels OLS results with HC1 standard errors.
+            Statsmodels OLS results with HC1 standard errors. # To-Do: fix description with flex cov_type
 
         Raises:
             ValueError: If penalty settings are invalid when using the parametric
