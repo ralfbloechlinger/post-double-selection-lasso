@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+import pandas as pd
+
 import pdslasso
 
 
@@ -71,6 +73,41 @@ def main():
     print("OK: fitted model with", len(model.selected_controls), "selected controls.")
     print("Treatment coefficient:", results.params["d"])
 
+    print("\nSummary output with fixed effects -------------")
+    df_fe_small, _ = pdslasso.sim_data.simulate_pds_data(
+        n=250,
+        p=20,
+        true_effect=2.0,
+        random_seed=2,
+        include_fixed_effects=True,
+        n_groups=6,
+        fe_outcome_sd=3,
+    )
+    model = pdslasso.PDSLasso(
+        data=df_fe_small,
+        y="y",
+        d="d",
+        lasso_penalty_cv=False,
+        fixed_effect_col="fe",
+        control_cols=[c for c in df_fe_small.columns if c.startswith("x")],
+    )
+    results = model.fit()
+    print(results.summary())
+
+    df_fe_multi = df_fe_small.copy()
+    df_fe_multi["fe_alt"] = pd.Categorical(
+        (df_fe_multi["x0"] > df_fe_multi["x0"].median()).astype(int)
+    )
+    model = pdslasso.PDSLasso(
+        data=df_fe_multi,
+        y="y",
+        d="d",
+        lasso_penalty_cv=False,
+        fixed_effect_col=["fe", "fe_alt"],
+        control_cols=[c for c in df_fe_multi.columns if c.startswith("x")],
+    )
+    results = model.fit()
+    print(results.summary())
 
     print("\nFalsely excluding Fe from construction -------------")
     df_fe = df_fe.copy().drop(columns=["fe"])

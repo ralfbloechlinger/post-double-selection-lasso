@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pdslasso"
-version = "0.1.0"
+version = "0.1.2"
 description = "Post-double-selection LASSO for treatment effects with high-dimensional controls"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -31,7 +31,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "Topic :: Scientific/Engineering :: Econometrics",
+    "Topic :: Scientific/Engineering :: Information Analysis",
 ]
 dependencies = [
     "numpy",

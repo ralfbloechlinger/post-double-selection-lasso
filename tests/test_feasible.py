@@ -118,6 +118,50 @@ def test_zeroed_control_after_partial_out() -> None:
     assert "x_group" not in model.selected_controls
 
 
+def test_summary_hides_fixed_effect_rows() -> None:
+    df = _make_fe_zero_control_data()
+    model = PDSLasso(
+        data=df,
+        y="y",
+        d="d",
+        control_cols=["x_group", "x_noise"],
+        fixed_effect_col="fe",
+    )
+    res = model.fit()
+    summary_text = res.summary().as_text()
+
+    assert "fe_1" not in summary_text
+    assert "fe_2" not in summary_text
+    assert "fe_3" not in summary_text
+    assert "fe_4" not in summary_text
+    assert "fe_5" not in summary_text
+    assert "OLS with PDS-selected variables and full regressor set." in summary_text
+    assert "Standard errors and t statistics valid for the following variables only: d." in summary_text
+    assert "Includes FE for fe (5 absorbed dummies)." in summary_text
+
+
+def test_summary_handles_multiple_fixed_effect_columns() -> None:
+    df = _make_fe_zero_control_data()
+    df = df.copy()
+    df["fe_alt"] = pd.Categorical((df["x_noise"] > df["x_noise"].median()).astype(int))
+    model = PDSLasso(
+        data=df,
+        y="y",
+        d="d",
+        control_cols=["x_group", "x_noise"],
+        fixed_effect_col=["fe", "fe_alt"],
+    )
+    res = model.fit()
+    summary_text = res.summary().as_text()
+
+    assert "fe_1" not in summary_text
+    assert "fe_alt_1" not in summary_text
+    assert "OLS with PDS-selected variables and full regressor set." in summary_text
+    assert "Standard errors and t statistics valid for the following variables only: d." in summary_text
+    assert "Includes FE for fe (5 absorbed dummies)." in summary_text
+    assert "Includes FE for fe_alt (1 absorbed dummies)." in summary_text
+
+
 def main() -> None:
     tests = [
         test_no_controls_simple_ols,
@@ -125,6 +169,8 @@ def main() -> None:
         test_scaling_invariance_selection_and_coef,
         test_p_gt_n_stress,
         test_zeroed_control_after_partial_out,
+        test_summary_hides_fixed_effect_rows,
+        test_summary_handles_multiple_fixed_effect_columns,
     ]
     for test in tests:
         test()

@@ -18,18 +18,55 @@ Example:
 import math
 from statistics import NormalDist
 from typing import NamedTuple
+from types import MethodType
 
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import Lasso, LassoCV
 import statsmodels.api as sm
 from statsmodels.regression.linear_model import RegressionResultsWrapper
+from statsmodels.iolib.summary import Summary
 
 
 class PDSData(NamedTuple):
     y: pd.Series
     d: pd.Series
     X: pd.DataFrame | None
+
+
+def _build_summary_with_fe_notes(
+    results: RegressionResultsWrapper,
+    fe_dummy_names: list[str],
+    fe_labels: list[tuple[str, int]],
+    treatment_name: str,
+) -> Summary:
+    """Return a statsmodels summary with FE coefficient rows removed."""
+    summary = results._results.summary()
+    if not fe_dummy_names and not fe_labels:
+        summary.add_extra_txt([
+            f"OLS with PDS-selected variables and full regressor set.",
+            f"Standard errors and t statistics valid for the following variables only: {treatment_name}.",
+        ])
+        return summary
+
+    param_table = summary.tables[1]
+    filtered_rows = [
+        row for row in param_table
+        if not row.data or row.data[0] not in fe_dummy_names
+    ]
+    param_table[:] = filtered_rows
+
+    extra_txt = [
+        "OLS with PDS-selected variables and full regressor set.",
+        f"Standard errors and t statistics valid for the following variables only: {treatment_name}.",
+    ]
+    for fe_col, n_dummies in fe_labels:
+        if n_dummies > 0:
+            extra_txt.append(f"Includes FE for {fe_col} ({n_dummies} absorbed dummies).")
+        else:
+            extra_txt.append(f"Includes fixed effects for {fe_col}; no dummy coefficients shown.")
+    summary.add_extra_txt(extra_txt)
+    return summary
 
 
 class PDSLasso:
@@ -95,6 +132,8 @@ class PDSLasso:
             self.fixed_effect_col = []
         elif isinstance(fixed_effect_col, str):
             self.fixed_effect_col = [fixed_effect_col]
+        else:
+            self.fixed_effect_col = list(fixed_effect_col)
 
         self.lasso_penalty = lasso_penalty_cv
         self.penalty_c = penalty_c
@@ -103,6 +142,10 @@ class PDSLasso:
         self.feasible_lasso_max_iter = feasible_lasso_max_iter
         self.feasible_lasso_tol = feasible_lasso_tol
         self.feasible_lasso_eps = feasible_lasso_eps
+
+        # check that treatment is binary integer or boolean
+        if not isinstance(self.data[self.d].dtype, pd.BooleanDtype) and not (self.data[self.d].dtype == int and set(self.data[self.d].unique()).issubset({0, 1})):
+            raise ValueError("Treatment variable d must be binary (boolean or 0/1 integer).")
 
         if any(col in self.control_always_include for col in [self.y, self.d]):
             raise ValueError("control_always_include cannot contain the outcome or treatment variable.")
@@ -141,7 +184,7 @@ class PDSLasso:
         all_fe_dummies = []
         for fe_col_name in self.fixed_effect_col:
             fe_raw = self.data[fe_col_name]
-            if not pd.api.types.is_categorical_dtype(fe_raw):
+            if not isinstance(fe_raw.dtype, pd.CategoricalDtype):
                 fe_raw = fe_raw.astype("category")
             dummies = pd.get_dummies(fe_raw, prefix=fe_col_name, drop_first=True).astype(float)
             if dummies.shape[1] > 0:
@@ -362,8 +405,17 @@ class PDSLasso:
 
         # final matrix of X: variable of interest plus selected contrs
         X_final_df = self.data[selected_vars]
+        fe_dummy_names: list[str] = []
+        fe_labels: list[tuple[str, int]] = []
         if fe_matrix is not None:
             X_final_df = pd.concat([X_final_df, fe_matrix], axis=1)
+            fe_dummy_names = list(fe_matrix.columns)
+            for fe_col in self.fixed_effect_col:
+                fe_raw = self.data[fe_col]
+                if not isinstance(fe_raw.dtype, pd.CategoricalDtype):
+                    fe_raw = fe_raw.astype("category")
+                n_dummies = pd.get_dummies(fe_raw, prefix=fe_col, drop_first=True).shape[1]
+                fe_labels.append((fe_col, n_dummies))
         X_final_vec = sm.add_constant(X_final_df, has_constant="add")
 
         # fit object
@@ -381,6 +433,16 @@ class PDSLasso:
 
         self.final_regression = fin_reg_fit
         self.selected_controls = selected_conts
+        treatment_name = self.d
+        fin_reg_fit.summary = MethodType(
+            lambda self: _build_summary_with_fe_notes(
+                self,
+                fe_dummy_names,
+                fe_labels,
+                treatment_name,
+            ),
+            fin_reg_fit,
+        )
 
         return fin_reg_fit
             
