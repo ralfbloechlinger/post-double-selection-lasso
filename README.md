@@ -9,7 +9,7 @@ A simple Python implementation of the post-double selection LASSO estimator for 
 - Uses `Lasso` or `LassoCV` from `scikit-learn` for the two selection steps
 - Treats the intercept as unpenalized by partialling out a constant before both selection steps
 - Penalty level based on the parametric choice in BCH (2014) by default, with optional cross-validation
-- Uses `statsmodels.api.OLS` for the final unpenalized regression with HC1 robust standard errors
+- Uses `statsmodels.api.OLS` for the final unpenalized regression with HC1 or one-way cluster-robust standard errors
 - Supports partialling out of fixed effects (as categorical variables) and always-included controls
 
 ## Installation
@@ -66,8 +66,19 @@ model = PDSLasso(
     lasso_penalty_cv=False,              # Use parametric penalty (default) or CV
     penalty_c=1.1,                       # Constant for parametric penalty
     penalty_gamma=0.05,                  # Significance level for parametric penalty
+    cov_type="HC1",                      # Final-regression covariance type
+    cluster_cov=None,                    # Column for one-way clustered inference
 )
 ```
+
+When `cluster_cov` is provided, it overrides `cov_type` for the final OLS
+regression. The cluster column must exist, contain no missing identifiers, and
+contain at least two distinct clusters. Conventional cluster-robust inference
+can be unreliable with only a few clusters.
+
+Clustering currently applies only to final-regression inference. The two Lasso
+selection stages continue to use observation-level heteroskedastic penalty
+loadings; they are not cluster-aware.
 
 ## Remarks / Disclaimer
 

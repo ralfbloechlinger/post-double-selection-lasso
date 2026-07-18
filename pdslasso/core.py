@@ -2,7 +2,8 @@
 
 Implements the procedure described in Belloni, Chernozhukov, and Hansen (2014)
 to select controls via two Lasso fits and then estimate the treatment effect
-with OLS using heteroskedasticity-robust (HC1) standard errors.
+with OLS using heteroskedasticity-robust or one-way cluster-robust standard
+errors.
 
 Algorithm overview:
 1) Feasible Lasso: d on X with penalty loadings to select controls predictive of treatment.
@@ -15,10 +16,6 @@ Example:
     res = est.fit()
 """
 
-
-# To-Do: for clustered SE, we also need to adjust the Lasso step? 
-# How implemented in other packages?
-# Notes in Belloni et al. (2014)? 
 
 import math
 from statistics import NormalDist
@@ -121,7 +118,9 @@ class PDSLasso:
             feasible_lasso_tol: Tolerance for feasible Lasso loading convergence.
             feasible_lasso_eps: Floor to avoid zero penalty loadings.
             cov_type: Type of covariance matrix to use for inference.
-            cluster_cov: Optional column name for clustering variable for standard errors, overrides cov_type if provided.
+            cluster_cov: Optional column name for one-way clustered standard
+                errors in the final OLS regression. This overrides cov_type but
+                does not make the Lasso penalty loadings cluster-aware.
         Raises:
             KeyError: If any of y, d, or control_cols are missing from data.
         """
@@ -184,6 +183,27 @@ class PDSLasso:
         d_vec = self.data[self.d]
         X_ctrl = None if self.control_cols is None else self.data[self.control_cols]
         return PDSData(y=y_vec, d=d_vec, X=X_ctrl)
+
+    def _validate_cluster_groups(self) -> pd.Series | None:
+        """Return validated one-way cluster identifiers for final inference."""
+        if self.cluster_cov is None:
+            return None
+        if self.cluster_cov not in self.data.columns:
+            raise ValueError(
+                f"Cluster column {self.cluster_cov!r} not found in data."
+            )
+
+        groups = self.data[self.cluster_cov]
+        if groups.isna().any():
+            raise ValueError(
+                f"Cluster column {self.cluster_cov!r} contains missing values."
+            )
+        if groups.nunique() < 2:
+            raise ValueError(
+                f"Cluster column {self.cluster_cov!r} must contain at least "
+                "two distinct clusters."
+            )
+        return groups
 
     def _build_fixed_effects(self) -> pd.DataFrame | None:
         """
@@ -364,7 +384,8 @@ class PDSLasso:
         """Fit the post-double-selection model and return the final regression.
 
         Returns:
-            Statsmodels OLS results with HC1 standard errors. # To-Do: fix description with flex cov_type
+            Statsmodels OLS results using cov_type, or one-way cluster-robust
+            standard errors when cluster_cov is provided.
 
         Raises:
             ValueError: If penalty settings are invalid when using the parametric
@@ -374,6 +395,7 @@ class PDSLasso:
         data = self.prep_data()
         y_vec = data.y
         d_vec = data.d
+        cluster_groups = self._validate_cluster_groups()
 
         # build partialling out matrix to residualise y,d,X for Lasso steps
         # partialling out always-include controls and fixed effects
@@ -441,11 +463,11 @@ class PDSLasso:
 
         # fit object
         fin_reg = sm.OLS(y_vec, X_final_vec)
-        if self.cluster_cov is not None:
-            # add assert that cluster col exists
-            if self.cluster_cov not in data.columns:
-                raise ValueError(f"Cluster column {self.cluster_cov} not found in data.")
-            fin_reg_fit = fin_reg.fit(cov_type="cluster", cov_kwds={"groups": data[self.cluster_cov]})
+        if cluster_groups is not None:
+            fin_reg_fit = fin_reg.fit(
+                cov_type="cluster",
+                cov_kwds={"groups": cluster_groups},
+            )
         elif self.cov_type is not None:
             fin_reg_fit = fin_reg.fit(cov_type=self.cov_type)
         else:
