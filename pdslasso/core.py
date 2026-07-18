@@ -2,7 +2,8 @@
 
 Implements the procedure described in Belloni, Chernozhukov, and Hansen (2014)
 to select controls via two Lasso fits and then estimate the treatment effect
-with OLS using heteroskedasticity-robust (HC1) standard errors.
+with OLS using heteroskedasticity-robust or one-way cluster-robust standard
+errors.
 
 Algorithm overview:
 1) Feasible Lasso: d on X with penalty loadings to select controls predictive of treatment.
@@ -14,6 +15,7 @@ Example:
     est = PDSLasso(data=df, y="y", d="d", control_cols=["x0", "x1"])
     res = est.fit()
 """
+
 
 import math
 from statistics import NormalDist
@@ -60,11 +62,13 @@ def _build_summary_with_fe_notes(
         "OLS with PDS-selected variables and full regressor set.",
         f"Standard errors and t statistics valid for the following variables only: {treatment_name}.",
     ]
+    # To-Do: actually count how many dummies were absorbed for each FE column and report that in the summary notes
+    # currently we only count number of dummies generated in OHE (but columns may be dropped due to multi-colinearity)
     for fe_col, n_dummies in fe_labels:
         if n_dummies > 0:
             extra_txt.append(f"Includes FE for {fe_col} ({n_dummies} absorbed dummies).")
         else:
-            extra_txt.append(f"Includes fixed effects for {fe_col}; no dummy coefficients shown.")
+            extra_txt.append(f"Fixed effect for {fe_col} dropped (0 absorbed dummies, single category).")
     summary.add_extra_txt(extra_txt)
     return summary
 
@@ -93,10 +97,14 @@ class PDSLasso:
 
         Args:
             data: Input DataFrame containing outcome, treatment, and controls.
+                The treatment column may contain binary or continuous finite
+                real numeric values.
             y: Column name for the outcome variable.
-            d: Column name for the treatment variable.
-            control_cols: Column names for candidate controls. If None, fit OLS
-                with only the treatment variable.
+            d: Column name for a binary or continuous treatment variable. The
+                column must contain finite real numeric or Boolean values.
+            control_cols: Column names for candidate controls. The outcome and
+                treatment columns cannot be included. If None, fit OLS with
+                only the treatment variable.
             control_always_include: Column names for controls that should always be
                 included in the final OLS step (I3 in the paper) and partialed
                 out in the Lasso steps. A single column name can be passed as a
@@ -114,9 +122,13 @@ class PDSLasso:
             feasible_lasso_tol: Tolerance for feasible Lasso loading convergence.
             feasible_lasso_eps: Floor to avoid zero penalty loadings.
             cov_type: Type of covariance matrix to use for inference.
-            cluster_cov: Optional column name for clustering variable for standard errors, overrides cov_type if provided.
+            cluster_cov: Optional column name for one-way clustered standard
+                errors in the final OLS regression. This overrides cov_type but
+                does not make the Lasso penalty loadings cluster-aware.
         Raises:
             KeyError: If any of y, d, or control_cols are missing from data.
+            ValueError: If column roles conflict. Treatment data and treatment
+                identification are validated when fit is called.
         """
         self.data = data
         self.y = y 
@@ -142,11 +154,20 @@ class PDSLasso:
         self.feasible_lasso_max_iter = feasible_lasso_max_iter
         self.feasible_lasso_tol = feasible_lasso_tol
         self.feasible_lasso_eps = feasible_lasso_eps
+        self.cov_type = cov_type
+        self.cluster_cov = cluster_cov
 
-        # check that treatment is binary integer or boolean
-        if not isinstance(self.data[self.d].dtype, pd.BooleanDtype) and not (self.data[self.d].dtype == int and set(self.data[self.d].unique()).issubset({0, 1})):
-            raise ValueError("Treatment variable d must be binary (boolean or 0/1 integer).")
-
+        # checks on column names and overlaps
+        if self.y == self.d:
+            raise ValueError("Outcome and treatment columns must be distinct.")
+        if self.control_cols is not None and self.y in self.control_cols:
+            raise ValueError(
+                f"control_cols cannot contain outcome column {self.y!r}."
+            )
+        if self.control_cols is not None and self.d in self.control_cols:
+            raise ValueError(
+                f"control_cols cannot contain treatment column {self.d!r}."
+            )
         if any(col in self.control_always_include for col in [self.y, self.d]):
             raise ValueError("control_always_include cannot contain the outcome or treatment variable.")
         if any(col in [self.y, self.d] for col in self.fixed_effect_col):
@@ -159,8 +180,7 @@ class PDSLasso:
             fe_col in self.control_cols for fe_col in self.fixed_effect_col):
             raise ValueError("fixed_effect_col should not be listed in control_cols; pass it separately.")
         
-        self.cov_type = cov_type
-        self.cluster_cov = cluster_cov
+        
 
 
     def __repr__(self) -> str:
@@ -174,6 +194,111 @@ class PDSLasso:
         X_ctrl = None if self.control_cols is None else self.data[self.control_cols]
         return PDSData(y=y_vec, d=d_vec, X=X_ctrl)
 
+    def _ordered_selected_controls(
+        self,
+        selected_cols_d_on_X: list[str],
+        selected_cols_y_on_X: list[str],
+    ) -> list[str]:
+        """Return the selected-control union in stable user-supplied order."""
+        selected = set(
+            selected_cols_d_on_X
+            + selected_cols_y_on_X
+            + self.control_always_include
+        )
+        ordered_candidates = [] if self.control_cols is None else self.control_cols
+        ordered_pool = ordered_candidates + self.control_always_include
+        return list(
+            dict.fromkeys(col for col in ordered_pool if col in selected)
+        )
+
+    def _validate_treatment(self) -> pd.Series:
+        """Return treatment as floats after validating its data contract."""
+        treatment_count = sum(column == self.d for column in self.data.columns)
+        if treatment_count == 0:
+            raise KeyError(f"Treatment column {self.d!r} not found in data.")
+        if treatment_count > 1:
+            raise ValueError(
+                f"Treatment column {self.d!r} must identify exactly one "
+                "DataFrame column."
+            )
+
+        treatment = self.data[self.d]
+        treatment_dtype = treatment.dtype
+        is_real_numeric = (
+            pd.api.types.is_numeric_dtype(treatment_dtype)
+            or pd.api.types.is_bool_dtype(treatment_dtype)
+        ) and not pd.api.types.is_complex_dtype(treatment_dtype)
+        if not is_real_numeric:
+            raise ValueError(
+                f"Treatment column {self.d!r} must contain real numeric values."
+            )
+
+        treatment_values = treatment.to_numpy(dtype=float, na_value=np.nan)
+        if not np.isfinite(treatment_values).all():
+            raise ValueError(
+                f"Treatment column {self.d!r} contains missing or non-finite "
+                "values."
+            )
+        if treatment_values.size == 0 or np.all(
+            treatment_values == treatment_values[0]
+        ):
+            raise ValueError(
+                f"Treatment column {self.d!r} must vary across observations."
+            )
+
+        return pd.Series(
+            treatment_values,
+            index=treatment.index,
+            name=self.d,
+        )
+
+    def _validate_treatment_identification(
+        self,
+        treatment: pd.Series,
+        nuisance: pd.DataFrame | None,
+        context: str,
+    ) -> None:
+        """Require treatment to increase numerical rank over nuisance terms."""
+        treatment_values = treatment.to_numpy(dtype=float).reshape(-1, 1)
+        if nuisance is None or nuisance.shape[1] == 0:
+            nuisance_values = np.ones((len(treatment), 1))
+        else:
+            nuisance_values = sm.add_constant(
+                nuisance,
+                has_constant="add",
+            ).to_numpy(dtype=float)
+
+        nuisance_rank = np.linalg.matrix_rank(nuisance_values)
+        full_rank = np.linalg.matrix_rank(
+            np.column_stack([nuisance_values, treatment_values])
+        )
+        if full_rank <= nuisance_rank:
+            raise ValueError(
+                f"Treatment column {self.d!r} is not identified in the "
+                f"{context}."
+            )
+
+    def _validate_cluster_groups(self) -> pd.Series | None:
+        """Return validated one-way cluster identifiers for final inference."""
+        if self.cluster_cov is None:
+            return None
+        if self.cluster_cov not in self.data.columns:
+            raise ValueError(
+                f"Cluster column {self.cluster_cov!r} not found in data."
+            )
+
+        groups = self.data[self.cluster_cov]
+        if groups.isna().any():
+            raise ValueError(
+                f"Cluster column {self.cluster_cov!r} contains missing values."
+            )
+        if groups.nunique() < 2:
+            raise ValueError(
+                f"Cluster column {self.cluster_cov!r} must contain at least "
+                "two distinct clusters."
+            )
+        return groups
+
     def _build_fixed_effects(self) -> pd.DataFrame | None:
         """
         Convert fixed effect column(s) to one-hot-encoded DataFrame.
@@ -182,7 +307,7 @@ class PDSLasso:
             return None
 
         all_fe_dummies = []
-        for fe_col_name in self.fixed_effect_col:
+        for fe_col_name in self.fixed_effect_col: # fixed_effect_col is always a list
             fe_raw = self.data[fe_col_name]
             if not isinstance(fe_raw.dtype, pd.CategoricalDtype):
                 fe_raw = fe_raw.astype("category")
@@ -219,30 +344,37 @@ class PDSLasso:
         fe_matrix: pd.DataFrame | None,
     ) -> pd.Series | pd.DataFrame | np.ndarray:
         """
-        Partial out fixed effects and always-include controls from values using OLS. 
-        (controls must be included in fe matrix)
+        Partial out a constant and any non-penalized controls using OLS.
+
+        Fixed effects and always-include controls must be included in fe_matrix.
+        The constant is always removed so downstream Lasso fits can consistently
+        use fit_intercept=False.
         Logic follows from Frisch-Waugh-Lovell.
         Values may be a matrix or vector (DataFrame, Series, or ndarray).
         """
-        if fe_matrix is None:
-            return values
-        fe_design = sm.add_constant(fe_matrix, has_constant="add")
-        design = fe_design.to_numpy()
+        # convert values to numpy array with correct shape for least squares
         if isinstance(values, pd.Series):
             y_mat = values.to_numpy().reshape(-1, 1)
-            coef, _, _, _ = np.linalg.lstsq(design, y_mat, rcond=None)
-            resid = y_mat - design @ coef
-            return pd.Series(resid.ravel(), index=values.index, name=values.name)
-        if isinstance(values, pd.DataFrame):
+        elif isinstance(values, pd.DataFrame):
             y_mat = values.to_numpy()
-            coef, _, _, _ = np.linalg.lstsq(design, y_mat, rcond=None)
-            resid = y_mat - design @ coef
-            return pd.DataFrame(resid, index=values.index, columns=values.columns)
-        y_mat = np.asarray(values)
-        if y_mat.ndim == 1:
-            y_mat = y_mat.reshape(-1, 1)
+        else:
+            y_mat = np.asarray(values)
+            if y_mat.ndim == 1:
+                y_mat = y_mat.reshape(-1, 1)
+
+        if fe_matrix is None:
+            design = np.ones((y_mat.shape[0], 1))
+        else:
+            design = sm.add_constant(fe_matrix, has_constant="add").to_numpy()
+
         coef, _, _, _ = np.linalg.lstsq(design, y_mat, rcond=None)
         resid = y_mat - design @ coef
+
+        # return residuals in same format as input values
+        if isinstance(values, pd.Series):
+            return pd.Series(resid.ravel(), index=values.index, name=values.name)
+        if isinstance(values, pd.DataFrame):
+            return pd.DataFrame(resid, index=values.index, columns=values.columns)
         if resid.shape[1] == 1:
             return resid.ravel()
         return resid
@@ -271,7 +403,7 @@ class PDSLasso:
         y_vec: np.ndarray,
         selected_idx: np.ndarray,
     ) -> np.ndarray:
-        """Compute post-Lasso residuals without intercept on selected controls."""
+        """Compute residuals from inputs already residualized on a constant."""
         if selected_idx.size == 0:
             return y_vec
         X_sel = X_ctrl[:, selected_idx]
@@ -293,7 +425,9 @@ class PDSLasso:
         if n_ctrl == 0:
             return Lasso(alpha=0.0), []
 
-        # initialize loadings using residualized y
+        # Inputs are residualized on a constant and any non-penalized controls.
+        # The empty initial model on these residualized inputs therefore needs no
+        # additional intercept.
         loadings = np.sqrt(np.mean((X_mat ** 2) * (y_arr[:, None] ** 2), axis=0))
         loadings = np.maximum(loadings, self.feasible_lasso_eps)
 
@@ -303,6 +437,7 @@ class PDSLasso:
         # iterate until loadings converge or max iterations are reached
         for _ in range(self.feasible_lasso_max_iter):
             X_scaled = X_mat / loadings
+            # Use CV to select alpha if lasso_penalty_cv is True, otherwise use parametric penalty level
             if self.lasso_penalty:
                 lasso_fit = LassoCV(fit_intercept=False, max_iter=10000).fit(
                     X=X_scaled,
@@ -324,7 +459,7 @@ class PDSLasso:
             resid = self._post_lasso_residuals(X_mat, y_arr, selected_idx)
 
             loadings_new = np.sqrt(np.mean((X_mat ** 2) * (resid[:, None] ** 2), axis=0))
-            loadings_new *= math.sqrt(n_obs / max(n_obs - s_k, 1))
+            loadings_new *= math.sqrt(n_obs / max(n_obs - s_k, 1)) # df correction
             loadings_new = np.maximum(loadings_new, self.feasible_lasso_eps)
 
             last_fit = lasso_fit
@@ -343,26 +478,35 @@ class PDSLasso:
         """Fit the post-double-selection model and return the final regression.
 
         Returns:
-            Statsmodels OLS results with HC1 standard errors.
+            Statsmodels OLS results using cov_type, or one-way cluster-robust
+            standard errors when cluster_cov is provided.
 
         Raises:
-            ValueError: If penalty settings are invalid when using the parametric
-                penalty (see _run_lasso).
+            ValueError: If treatment data or treatment identification are
+                invalid, or if penalty settings are invalid when using the
+                parametric penalty (see _run_lasso).
         """
 
+        treatment = self._validate_treatment()
         data = self.prep_data()
         y_vec = data.y
-        d_vec = data.d
+        d_vec = treatment
+        cluster_groups = self._validate_cluster_groups()
 
         # build partialling out matrix to residualise y,d,X for Lasso steps
         # partialling out always-include controls and fixed effects
         control_always_include = list(self.control_always_include)
         fe_matrix = self._build_fixed_effects()
         partial_out_matrix = self._build_partial_out_matrix(control_always_include, fe_matrix)
+        self._validate_treatment_identification(
+            d_vec,
+            partial_out_matrix,
+            "partialled-out treatment equation",
+        )
 
         # no controls => simple OLS
         if self.control_cols is None:
-            selected_conts = control_always_include
+            selected_conts = self._ordered_selected_controls([], [])
             selected_vars = [self.d] + selected_conts
 
         else:
@@ -377,7 +521,7 @@ class PDSLasso:
 
             
             if lasso_cols:
-                # Lasso 1: treatment indicator on all other controls 
+                # Lasso 1: treatment on all other controls
                 lasso_1, selected_cols_d_on_X = self._run_lasso(
                     X_ctrl=X_lasso_resid,
                     y_vec=d_resid,
@@ -399,12 +543,17 @@ class PDSLasso:
             self.first_stage_lasso = lasso_1
             self.second_stage_lasso = lasso_2 
 
-            # selected controls as union of both sets of controls
-            selected_conts = list(set(selected_cols_d_on_X + selected_cols_y_on_X + control_always_include))
+            # Preserve candidate-control order, then append always-included
+            # controls that were not listed as candidates.
+            selected_conts = self._ordered_selected_controls(
+                selected_cols_d_on_X,
+                selected_cols_y_on_X,
+            )
             selected_vars = [self.d] + selected_conts
 
         # final matrix of X: variable of interest plus selected contrs
-        X_final_df = self.data[selected_vars]
+        X_final_df = self.data[selected_vars].copy()
+        X_final_df[self.d] = d_vec
         fe_dummy_names: list[str] = []
         fe_labels: list[tuple[str, int]] = []
         if fe_matrix is not None:
@@ -416,15 +565,20 @@ class PDSLasso:
                     fe_raw = fe_raw.astype("category")
                 n_dummies = pd.get_dummies(fe_raw, prefix=fe_col, drop_first=True).shape[1]
                 fe_labels.append((fe_col, n_dummies))
+        self._validate_treatment_identification(
+            d_vec,
+            X_final_df.drop(columns=self.d),
+            "final regression",
+        )
         X_final_vec = sm.add_constant(X_final_df, has_constant="add")
 
         # fit object
         fin_reg = sm.OLS(y_vec, X_final_vec)
-        if self.cluster_cov is not None:
-            # add assert that cluster col exists
-            if self.cluster_cov not in data.columns:
-                raise ValueError(f"Cluster column {self.cluster_cov} not found in data.")
-            fin_reg_fit = fin_reg.fit(cov_type="cluster", cov_kwds={"groups": data[self.cluster_cov]})
+        if cluster_groups is not None:
+            fin_reg_fit = fin_reg.fit(
+                cov_type="cluster",
+                cov_kwds={"groups": cluster_groups},
+            )
         elif self.cov_type is not None:
             fin_reg_fit = fin_reg.fit(cov_type=self.cov_type)
         else:

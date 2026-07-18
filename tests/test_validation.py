@@ -4,6 +4,7 @@
 import re
 import numpy as np
 import pandas as pd
+import pytest
 
 from pdslasso import PDSLasso
 
@@ -118,6 +119,56 @@ def test_fe_col_in_control_cols_raises():
     )
 
 
+def test_outcome_and_treatment_must_be_distinct():
+    """The same column cannot serve as both outcome and treatment."""
+    df = pd.DataFrame({"value": [0.0, 1.0, 2.0, 3.0]})
+    assert_raises(
+        ValueError,
+        PDSLasso,
+        data=df,
+        y="value",
+        d="value",
+        control_cols=None,
+        match="Outcome and treatment columns must be distinct",
+    )
+
+
+def test_outcome_in_candidate_controls_raises():
+    """Outcome leakage into the selection and final designs is rejected."""
+    df = pd.DataFrame({
+        "y": [1.0, 2.0, 3.0, 4.0],
+        "dose": [0.0, 1.0, 0.0, 1.0],
+        "x0": [1.0, 2.0, 3.0, 4.0],
+    })
+    assert_raises(
+        ValueError,
+        PDSLasso,
+        data=df,
+        y="y",
+        d="dose",
+        control_cols=["x0", "y"],
+        match="control_cols cannot contain outcome column 'y'",
+    )
+
+
+def test_treatment_in_candidate_controls_raises():
+    """Treatment cannot enter either side of its own selection equation."""
+    df = pd.DataFrame({
+        "y": [1.0, 2.0, 3.0, 4.0],
+        "dose": [0.0, 1.0, 0.0, 1.0],
+        "x0": [1.0, 2.0, 3.0, 4.0],
+    })
+    assert_raises(
+        ValueError,
+        PDSLasso,
+        data=df,
+        y="y",
+        d="dose",
+        control_cols=["dose", "x0"],
+        match="control_cols cannot contain treatment column 'dose'",
+    )
+
+
 # =============================================================================
 # Input Validation Tests - KeyError cases
 # =============================================================================
@@ -198,7 +249,7 @@ def test_nan_in_outcome_raises():
 
 
 def test_nan_in_treatment_raises():
-    """NaN in treatment should raise ValueError in Lasso step (sklearn rejects NaN)."""
+    """NaN in treatment should raise a treatment-specific ValueError."""
     rng = np.random.default_rng(42)
     n = 50
     x0 = rng.normal(size=n)
@@ -209,8 +260,11 @@ def test_nan_in_treatment_raises():
     df = pd.DataFrame({"y": y, "d": d, "x0": x0})
     model = PDSLasso(data=df, y="y", d="d", control_cols=["x0"])
 
-    # sklearn Lasso raises ValueError for NaN inputs
-    assert_raises(ValueError, model.fit, match="Input.*contains NaN")
+    assert_raises(
+        ValueError,
+        model.fit,
+        match="Treatment column 'd' contains missing or non-finite values",
+    )
 
 
 def test_nan_in_controls_propagates():
@@ -453,6 +507,228 @@ def test_binary_treatment():
     assert np.isfinite(res.params["d"])
     # Treatment effect should be roughly close to 3.0
     assert abs(res.params["d"] - 3.0) < 1.5
+
+
+@pytest.mark.parametrize(
+    "treatment",
+    [
+        np.array([False, True] * 40),
+        pd.Series([False, True] * 40, dtype="boolean"),
+        np.array([0, 1] * 40, dtype=np.int8),
+        np.array([0, 1] * 40, dtype=np.uint8),
+        pd.Series([0, 1] * 40, dtype="Int64"),
+        np.array([0.0, 1.0] * 40),
+    ],
+    ids=[
+        "native-bool",
+        "nullable-bool",
+        "int8",
+        "uint8",
+        "nullable-int",
+        "float-binary",
+    ],
+)
+def test_common_binary_treatment_dtypes_are_supported(treatment):
+    """Binary values are accepted independently of their numeric dtype."""
+    rng = np.random.default_rng(20260718)
+    n = len(treatment)
+    x0 = rng.normal(size=n)
+    treatment_numeric = np.asarray(treatment, dtype=float)
+    y = 2.0 * treatment_numeric + 0.5 * x0 + rng.normal(scale=0.5, size=n)
+    df = pd.DataFrame({"y": y, "dose": treatment, "x0": x0})
+
+    result = PDSLasso(
+        data=df,
+        y="y",
+        d="dose",
+        control_cols=["x0"],
+    ).fit()
+
+    assert np.isfinite(result.params["dose"])
+
+
+def test_continuous_treatment_is_supported():
+    """The partially linear treatment equation supports continuous values."""
+    rng = np.random.default_rng(1234)
+    n = 200
+    x0 = rng.normal(size=n)
+    dose = 0.8 * x0 + rng.normal(scale=0.7, size=n)
+    y = 1.75 * dose + 0.4 * x0 + rng.normal(scale=0.5, size=n)
+    df = pd.DataFrame({"y": y, "dose": dose, "x0": x0})
+
+    result = PDSLasso(
+        data=df,
+        y="y",
+        d="dose",
+        control_cols=["x0"],
+    ).fit()
+
+    assert np.isfinite(result.params["dose"])
+    assert abs(result.params["dose"] - 1.75) < 0.5
+
+
+def test_nullable_boolean_treatment_does_not_mutate_caller_data():
+    """Internal numeric conversion preserves the caller's values and dtype."""
+    rng = np.random.default_rng(987)
+    n = 80
+    x0 = rng.normal(size=n)
+    dose = pd.Series([False, True] * (n // 2), dtype="boolean")
+    y = 2.0 * dose.astype(float) + 0.3 * x0 + rng.normal(size=n)
+    df = pd.DataFrame({"y": y, "dose": dose, "x0": x0})
+    original = df.copy(deep=True)
+
+    PDSLasso(df, y="y", d="dose", control_cols=["x0"]).fit()
+
+    pd.testing.assert_frame_equal(df, original)
+
+
+@pytest.mark.parametrize(
+    "treatment",
+    [
+        ["low", "high"] * 20,
+        pd.Categorical([0, 1] * 20),
+        np.array([0 + 0j, 1 + 1j] * 20),
+    ],
+    ids=["string", "categorical", "complex"],
+)
+def test_non_real_numeric_treatment_raises(treatment):
+    """Treatment must use a real numeric or Boolean dtype."""
+    df = pd.DataFrame({
+        "y": np.arange(40, dtype=float),
+        "dose": treatment,
+        "x0": np.linspace(-1.0, 1.0, 40),
+    })
+    model = PDSLasso(df, y="y", d="dose", control_cols=["x0"])
+
+    assert_raises(
+        ValueError,
+        model.fit,
+        match="Treatment column 'dose' must contain real numeric values",
+    )
+
+
+@pytest.mark.parametrize("bad_value", [np.inf, -np.inf])
+def test_infinite_treatment_raises(bad_value):
+    """Positive and negative infinity are rejected before estimation."""
+    dose = np.linspace(-1.0, 1.0, 40)
+    dose[5] = bad_value
+    df = pd.DataFrame({
+        "y": np.arange(40, dtype=float),
+        "dose": dose,
+        "x0": np.linspace(1.0, 2.0, 40),
+    })
+    model = PDSLasso(df, y="y", d="dose", control_cols=["x0"])
+
+    assert_raises(
+        ValueError,
+        model.fit,
+        match="Treatment column 'dose' contains missing or non-finite values",
+    )
+
+
+@pytest.mark.parametrize(
+    "treatment",
+    [np.zeros(40), np.ones(40), np.full(40, 2.5)],
+    ids=["all-zero", "all-one", "constant-continuous"],
+)
+def test_constant_treatment_raises(treatment):
+    """Finite-looking OLS output is not returned for constant treatment."""
+    df = pd.DataFrame({
+        "y": np.arange(40, dtype=float),
+        "dose": treatment,
+        "x0": np.linspace(-1.0, 1.0, 40),
+    })
+    model = PDSLasso(df, y="y", d="dose", control_cols=["x0"])
+
+    assert_raises(
+        ValueError,
+        model.fit,
+        match="Treatment column 'dose' must vary across observations",
+    )
+
+
+def test_treatment_absorbed_by_always_include_raises():
+    """Treatment must vary after partialling out always-included controls."""
+    x0 = np.linspace(-2.0, 2.0, 80)
+    dose = 1.0 + 2.0 * x0
+    df = pd.DataFrame({"y": 3.0 * dose + x0, "dose": dose, "x0": x0})
+    model = PDSLasso(
+        df,
+        y="y",
+        d="dose",
+        control_cols=None,
+        control_always_include=["x0"],
+    )
+
+    assert_raises(
+        ValueError,
+        model.fit,
+        match="Treatment column 'dose' is not identified in the partialled-out treatment equation",
+    )
+
+
+def test_treatment_absorbed_by_fixed_effects_raises():
+    """Treatment must have within-group variation when fixed effects are used."""
+    groups = np.repeat(np.arange(4), 20)
+    dose = groups.astype(float)
+    df = pd.DataFrame({
+        "y": 2.0 * dose + np.tile(np.arange(20), 4),
+        "dose": dose,
+        "fe": pd.Categorical(groups),
+    })
+    model = PDSLasso(
+        df,
+        y="y",
+        d="dose",
+        control_cols=None,
+        fixed_effect_col="fe",
+    )
+
+    assert_raises(
+        ValueError,
+        model.fit,
+        match="Treatment column 'dose' is not identified in the partialled-out treatment equation",
+    )
+
+
+def test_treatment_collinear_with_selected_control_raises():
+    """Treatment must add rank to the selected final regression design."""
+    rng = np.random.default_rng(2468)
+    dose = rng.normal(size=200)
+    df = pd.DataFrame({
+        "y": 2.0 * dose + rng.normal(size=200),
+        "dose": dose,
+        "dose_alias": dose,
+    })
+    model = PDSLasso(
+        df,
+        y="y",
+        d="dose",
+        control_cols=["dose_alias"],
+    )
+
+    assert_raises(
+        ValueError,
+        model.fit,
+        match="Treatment column 'dose' is not identified in the final regression",
+    )
+
+
+def test_duplicate_treatment_labels_raise_during_fit():
+    """A treatment name must identify exactly one DataFrame column."""
+    values = np.column_stack([
+        np.arange(40, dtype=float),
+        np.tile([0.0, 1.0], 20),
+        np.linspace(-1.0, 1.0, 40),
+    ])
+    df = pd.DataFrame(values, columns=["y", "dose", "dose"])
+    model = PDSLasso(df, y="y", d="dose", control_cols=None)
+
+    assert_raises(
+        ValueError,
+        model.fit,
+        match="Treatment column 'dose' must identify exactly one DataFrame column",
+    )
 
 
 def test_single_fe_group():
