@@ -97,8 +97,11 @@ class PDSLasso:
 
         Args:
             data: Input DataFrame containing outcome, treatment, and controls.
+                The treatment column may contain binary or continuous finite
+                real numeric values.
             y: Column name for the outcome variable.
-            d: Column name for the treatment variable.
+            d: Column name for a binary or continuous treatment variable. The
+                column must contain finite real numeric or Boolean values.
             control_cols: Column names for candidate controls. If None, fit OLS
                 with only the treatment variable.
             control_always_include: Column names for controls that should always be
@@ -123,6 +126,8 @@ class PDSLasso:
                 does not make the Lasso penalty loadings cluster-aware.
         Raises:
             KeyError: If any of y, d, or control_cols are missing from data.
+            ValueError: If column roles conflict. Treatment data and treatment
+                identification are validated when fit is called.
         """
         self.data = data
         self.y = y 
@@ -151,13 +156,13 @@ class PDSLasso:
         self.cov_type = cov_type
         self.cluster_cov = cluster_cov
 
-        # check that treatment is binary integer or boolean
-        if not isinstance(self.data[self.d].dtype, pd.BooleanDtype) and not (self.data[self.d].dtype == int and set(self.data[self.d].unique()).issubset({0, 1})):
-            raise ValueError("Treatment variable d must be binary (boolean or 0/1 integer).")
-        if isinstance(self.data[self.d].dtype, pd.BooleanDtype):
-            self.data[self.d] = self.data[self.d].astype(int)
-
         # checks on column names and overlaps
+        if self.y == self.d:
+            raise ValueError("Outcome and treatment columns must be distinct.")
+        if self.control_cols is not None and self.d in self.control_cols:
+            raise ValueError(
+                f"control_cols cannot contain treatment column {self.d!r}."
+            )
         if any(col in self.control_always_include for col in [self.y, self.d]):
             raise ValueError("control_always_include cannot contain the outcome or treatment variable.")
         if any(col in [self.y, self.d] for col in self.fixed_effect_col):
@@ -183,6 +188,73 @@ class PDSLasso:
         d_vec = self.data[self.d]
         X_ctrl = None if self.control_cols is None else self.data[self.control_cols]
         return PDSData(y=y_vec, d=d_vec, X=X_ctrl)
+
+    def _validate_treatment(self) -> pd.Series:
+        """Return treatment as floats after validating its data contract."""
+        treatment_count = sum(column == self.d for column in self.data.columns)
+        if treatment_count == 0:
+            raise KeyError(f"Treatment column {self.d!r} not found in data.")
+        if treatment_count > 1:
+            raise ValueError(
+                f"Treatment column {self.d!r} must identify exactly one "
+                "DataFrame column."
+            )
+
+        treatment = self.data[self.d]
+        treatment_dtype = treatment.dtype
+        is_real_numeric = (
+            pd.api.types.is_numeric_dtype(treatment_dtype)
+            or pd.api.types.is_bool_dtype(treatment_dtype)
+        ) and not pd.api.types.is_complex_dtype(treatment_dtype)
+        if not is_real_numeric:
+            raise ValueError(
+                f"Treatment column {self.d!r} must contain real numeric values."
+            )
+
+        treatment_values = treatment.to_numpy(dtype=float, na_value=np.nan)
+        if not np.isfinite(treatment_values).all():
+            raise ValueError(
+                f"Treatment column {self.d!r} contains missing or non-finite "
+                "values."
+            )
+        if treatment_values.size == 0 or np.all(
+            treatment_values == treatment_values[0]
+        ):
+            raise ValueError(
+                f"Treatment column {self.d!r} must vary across observations."
+            )
+
+        return pd.Series(
+            treatment_values,
+            index=treatment.index,
+            name=self.d,
+        )
+
+    def _validate_treatment_identification(
+        self,
+        treatment: pd.Series,
+        nuisance: pd.DataFrame | None,
+        context: str,
+    ) -> None:
+        """Require treatment to increase numerical rank over nuisance terms."""
+        treatment_values = treatment.to_numpy(dtype=float).reshape(-1, 1)
+        if nuisance is None or nuisance.shape[1] == 0:
+            nuisance_values = np.ones((len(treatment), 1))
+        else:
+            nuisance_values = sm.add_constant(
+                nuisance,
+                has_constant="add",
+            ).to_numpy(dtype=float)
+
+        nuisance_rank = np.linalg.matrix_rank(nuisance_values)
+        full_rank = np.linalg.matrix_rank(
+            np.column_stack([nuisance_values, treatment_values])
+        )
+        if full_rank <= nuisance_rank:
+            raise ValueError(
+                f"Treatment column {self.d!r} is not identified in the "
+                f"{context}."
+            )
 
     def _validate_cluster_groups(self) -> pd.Series | None:
         """Return validated one-way cluster identifiers for final inference."""
@@ -388,13 +460,15 @@ class PDSLasso:
             standard errors when cluster_cov is provided.
 
         Raises:
-            ValueError: If penalty settings are invalid when using the parametric
-                penalty (see _run_lasso).
+            ValueError: If treatment data or treatment identification are
+                invalid, or if penalty settings are invalid when using the
+                parametric penalty (see _run_lasso).
         """
 
+        treatment = self._validate_treatment()
         data = self.prep_data()
         y_vec = data.y
-        d_vec = data.d
+        d_vec = treatment
         cluster_groups = self._validate_cluster_groups()
 
         # build partialling out matrix to residualise y,d,X for Lasso steps
@@ -402,6 +476,11 @@ class PDSLasso:
         control_always_include = list(self.control_always_include)
         fe_matrix = self._build_fixed_effects()
         partial_out_matrix = self._build_partial_out_matrix(control_always_include, fe_matrix)
+        self._validate_treatment_identification(
+            d_vec,
+            partial_out_matrix,
+            "partialled-out treatment equation",
+        )
 
         # no controls => simple OLS
         if self.control_cols is None:
@@ -420,7 +499,7 @@ class PDSLasso:
 
             
             if lasso_cols:
-                # Lasso 1: treatment indicator on all other controls 
+                # Lasso 1: treatment on all other controls
                 lasso_1, selected_cols_d_on_X = self._run_lasso(
                     X_ctrl=X_lasso_resid,
                     y_vec=d_resid,
@@ -447,7 +526,8 @@ class PDSLasso:
             selected_vars = [self.d] + selected_conts
 
         # final matrix of X: variable of interest plus selected contrs
-        X_final_df = self.data[selected_vars]
+        X_final_df = self.data[selected_vars].copy()
+        X_final_df[self.d] = d_vec
         fe_dummy_names: list[str] = []
         fe_labels: list[tuple[str, int]] = []
         if fe_matrix is not None:
@@ -459,6 +539,11 @@ class PDSLasso:
                     fe_raw = fe_raw.astype("category")
                 n_dummies = pd.get_dummies(fe_raw, prefix=fe_col, drop_first=True).shape[1]
                 fe_labels.append((fe_col, n_dummies))
+        self._validate_treatment_identification(
+            d_vec,
+            X_final_df.drop(columns=self.d),
+            "final regression",
+        )
         X_final_vec = sm.add_constant(X_final_df, has_constant="add")
 
         # fit object

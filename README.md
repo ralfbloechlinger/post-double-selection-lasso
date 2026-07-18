@@ -5,6 +5,7 @@ A simple Python implementation of the post-double selection LASSO estimator for 
 ## Features
 
 - Post-double selection LASSO for partially linear models with a minimal class-based interface
+- Supports binary and continuous treatment variables
 - **Feasible Lasso with optimal penalty loadings** (default) as described in Belloni, Chernozhukov, and Hansen (2014)
 - Uses `Lasso` or `LassoCV` from `scikit-learn` for the two selection steps
 - Treats the intercept as unpenalized by partialling out a constant before both selection steps
@@ -70,6 +71,21 @@ model = PDSLasso(
     cluster_cov=None,                    # Column for one-way clustered inference
 )
 ```
+
+### Treatment variables
+
+`d` may identify a binary or continuous treatment column. The column must use
+a real numeric or Boolean dtype, contain only finite non-missing values, and
+vary across observations. Common binary representations such as Boolean,
+nullable Boolean, integer, nullable integer, and floating-point 0/1 values are
+supported.
+
+Treatment data are validated when `fit()` is called and converted on an
+internal Series; the input DataFrame is not modified. The treatment must retain
+variation after partialling out fixed effects and always-included controls, and
+it must be identified in the final regression design. The outcome and treatment
+must be distinct, and the treatment must not also be listed in `control_cols`,
+`control_always_include`, or `fixed_effect_col`.
 
 When `cluster_cov` is provided, it overrides `cov_type` for the final OLS
 regression. The cluster column must exist, contain no missing identifiers, and
