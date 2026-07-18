@@ -38,11 +38,37 @@ def test_partial_out_dataframe_matches_group_mean() -> None:
     assert np.allclose(x_resid.to_numpy(), expected.to_numpy())
 
 
-def test_partial_out_no_fe_returns_input() -> None:
+def test_partial_out_without_controls_centers_series() -> None:
     df = _make_fe_data()
     model = PDSLasso(data=df, y="y", d="d", control_cols=["x0", "x1"])
     y_resid = model._partial_out(df["y"], None)
-    assert np.allclose(y_resid.to_numpy(), df["y"].to_numpy())
+    expected = df["y"] - df["y"].mean()
+    assert isinstance(y_resid, pd.Series)
+    assert y_resid.index.equals(df.index)
+    assert y_resid.name == "y"
+    assert np.allclose(y_resid.to_numpy(), expected.to_numpy())
+
+
+def test_partial_out_without_controls_centers_matrix_inputs() -> None:
+    df = _make_fe_data()
+    model = PDSLasso(data=df, y="y", d="d", control_cols=["x0", "x1"])
+    values = df[["x0", "x1"]]
+
+    frame_resid = model._partial_out(values, None)
+    array_resid = model._partial_out(values.to_numpy(), None)
+    vector_resid = model._partial_out(values["x0"].to_numpy(), None)
+    expected = values - values.mean()
+
+    assert isinstance(frame_resid, pd.DataFrame)
+    assert frame_resid.index.equals(values.index)
+    assert frame_resid.columns.equals(values.columns)
+    assert np.allclose(frame_resid.to_numpy(), expected.to_numpy())
+    assert isinstance(array_resid, np.ndarray)
+    assert array_resid.shape == values.shape
+    assert np.allclose(array_resid, expected.to_numpy())
+    assert isinstance(vector_resid, np.ndarray)
+    assert vector_resid.shape == (len(values),)
+    assert np.allclose(vector_resid, expected["x0"].to_numpy())
 
 
 def test_fixed_effects_are_numeric() -> None:
@@ -57,7 +83,8 @@ def main() -> None:
     tests = [
         test_partial_out_series_matches_group_mean,
         test_partial_out_dataframe_matches_group_mean,
-        test_partial_out_no_fe_returns_input,
+        test_partial_out_without_controls_centers_series,
+        test_partial_out_without_controls_centers_matrix_inputs,
         test_fixed_effects_are_numeric,
     ]
     for test in tests:

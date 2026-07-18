@@ -2,8 +2,9 @@
 
 This document specifies an implementation-ready algorithm for the **feasible Lasso** (heteroskedasticity-robust Lasso with **iteratively estimated penalty loadings**) used in Belloni, Chernozhukov, and Hansen (2014), eq. (2.12) and Algorithm 1 in Appendix A.
 
-The algorithm below is written to integrate cleanly with the current `pdslasso.py` structure, where `y`, `d`, and the candidate controls `X` are **residualized** (“partialled out”) with respect to: 
+The algorithm below is written to integrate cleanly with the current `pdslasso/core.py` structure, where `y`, `d`, and the candidate controls `X` are **residualized** (“partialled out”) with respect to:
 
+- a constant,
 - always-include controls, and
 - fixed effects (one-hot dummies),
   via Frisch–Waugh–Lovell before the Lasso steps.
@@ -117,7 +118,7 @@ Inputs per Lasso step:
 Algorithm 1 initializes loadings from residuals of an initial “small” model `I0`.
 In our integration, the clean choice is:
 
-- If the code already **residualized `y` and `X`** with respect to fixed effects and always-include controls,
+- If the code already **residualized `y` and `X`** with respect to a constant, fixed effects, and always-include controls,
   take residuals from `I0 = {}` on the residualized data, i.e.:
   
   - `e0 = y` (since `y` is already partialled out)
@@ -235,7 +236,8 @@ def feasible_loadings(y, X, c=1.1, gamma=0.05, K=6, nu=1e-4, eps=1e-12):
 In `fit()` (current structure):
 
 1) Prepare data: `y_vec`, `d_vec`, candidate controls `X_lasso`.
-2) Build `partial_out_matrix` (always-include controls + FE dummies).
+2) Build `partial_out_matrix` (always-include controls + FE dummies); the
+   residualization helper always adds a constant to this design.
 3) Residualize:
    - `X_lasso_resid = partial_out(X_lasso, partial_out_matrix)`
    - `y_resid = partial_out(y_vec, partial_out_matrix)`
@@ -266,7 +268,9 @@ Final regression (unchanged from existing code):
 - **All-zero / near-zero columns** after partial-out can produce near-zero loadings:
   - clip `ℓ_j` to `eps` and optionally drop columns whose variance is numerically zero.
 - **fit_intercept**:
-  - In the PDS workflow (after partial-out), set `fit_intercept=False` for both Lasso and Post-Lasso.
+  - In the PDS workflow (after partialling out a constant and any other
+    non-penalized controls), set `fit_intercept=False` for both Lasso and
+    Post-Lasso.
 - **Determinism**:
   - sklearn’s coordinate descent is deterministic given the same inputs (no random seed needed),
     but upstream preprocessing should preserve column ordering and alignment.

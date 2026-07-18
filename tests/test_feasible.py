@@ -49,6 +49,100 @@ def _make_fe_zero_control_data(seed: int = 7) -> pd.DataFrame:
     )
 
 
+def _make_location_invariance_data(
+    n: int = 300,
+    seed: int = 20260718,
+) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    controls = rng.normal(size=(n, 8))
+    d_latent = (
+        -1.5
+        + 1.4 * controls[:, 0]
+        - 0.9 * controls[:, 1]
+        + rng.normal(size=n)
+    )
+    d = (d_latent > 0).astype(int)
+    y = (
+        4.0
+        + 1.5 * d
+        + 1.2 * controls[:, 2]
+        - 0.8 * controls[:, 3]
+        + rng.normal(size=n)
+    )
+    control_cols = [f"x{i}" for i in range(controls.shape[1])]
+    return pd.DataFrame(controls, columns=control_cols).assign(d=d, y=y)
+
+
+def _selected_stage_controls(
+    model: PDSLasso,
+    stage_name: str,
+    control_cols: list[str],
+) -> set[str]:
+    stage = getattr(model, stage_name)
+    return {
+        control
+        for control, coefficient in zip(control_cols, stage.coef_)
+        if coefficient != 0
+    }
+
+
+def _assert_location_invariance(lasso_penalty_cv: bool) -> None:
+    df = _make_location_invariance_data()
+    control_cols = [column for column in df if column.startswith("x")]
+    shifted = df.copy()
+    shifted[control_cols] = shifted[control_cols] + 100.0
+    shifted["y"] = shifted["y"] + 100.0
+
+    base_model = PDSLasso(
+        data=df,
+        y="y",
+        d="d",
+        control_cols=control_cols,
+        lasso_penalty_cv=lasso_penalty_cv,
+    )
+    base_result = base_model.fit()
+    shifted_model = PDSLasso(
+        data=shifted,
+        y="y",
+        d="d",
+        control_cols=control_cols,
+        lasso_penalty_cv=lasso_penalty_cv,
+    )
+    shifted_result = shifted_model.fit()
+
+    for stage_name in ("first_stage_lasso", "second_stage_lasso"):
+        assert _selected_stage_controls(
+            base_model, stage_name, control_cols
+        ) == _selected_stage_controls(shifted_model, stage_name, control_cols)
+    assert set(base_model.selected_controls) == set(shifted_model.selected_controls)
+    assert np.isclose(
+        base_result.params["d"],
+        shifted_result.params["d"],
+        rtol=1e-8,
+        atol=1e-8,
+    )
+
+
+def test_location_invariance_with_parametric_penalty() -> None:
+    _assert_location_invariance(lasso_penalty_cv=False)
+
+
+def test_location_invariance_with_cross_validated_penalty() -> None:
+    _assert_location_invariance(lasso_penalty_cv=True)
+
+
+def test_constant_control_is_removed_by_intercept_residualization() -> None:
+    df = _make_location_invariance_data()
+    df["x_const"] = 5.0
+    control_cols = [column for column in df if column.startswith("x")]
+    model = PDSLasso(data=df, y="y", d="d", control_cols=control_cols)
+
+    result = model.fit()
+
+    assert np.isfinite(result.params["d"])
+    assert "x_const" not in model.selected_controls
+
+
 def test_no_controls_simple_ols() -> None:
     rng = np.random.default_rng(0)
     n = 200
@@ -167,6 +261,9 @@ def main() -> None:
         test_no_controls_simple_ols,
         test_empty_lasso_cols_keeps_always_include,
         test_scaling_invariance_selection_and_coef,
+        test_location_invariance_with_parametric_penalty,
+        test_location_invariance_with_cross_validated_penalty,
+        test_constant_control_is_removed_by_intercept_residualization,
         test_p_gt_n_stress,
         test_zeroed_control_after_partial_out,
         test_summary_hides_fixed_effect_rows,

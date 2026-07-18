@@ -7,6 +7,7 @@ A simple Python implementation of the post-double selection LASSO estimator for 
 - Post-double selection LASSO for partially linear models with a minimal class-based interface
 - **Feasible Lasso with optimal penalty loadings** (default) as described in Belloni, Chernozhukov, and Hansen (2014)
 - Uses `Lasso` or `LassoCV` from `scikit-learn` for the two selection steps
+- Treats the intercept as unpenalized by partialling out a constant before both selection steps
 - Penalty level based on the parametric choice in BCH (2014) by default, with optional cross-validation
 - Uses `statsmodels.api.OLS` for the final unpenalized regression with HC1 robust standard errors
 - Supports partialling out of fixed effects (as categorical variables) and always-included controls

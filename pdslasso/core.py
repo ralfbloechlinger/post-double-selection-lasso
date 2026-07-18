@@ -230,16 +230,14 @@ class PDSLasso:
         fe_matrix: pd.DataFrame | None,
     ) -> pd.Series | pd.DataFrame | np.ndarray:
         """
-        Partial out fixed effects and always-include controls from values using OLS. 
-        (controls must be included in fe matrix)
+        Partial out a constant and any non-penalized controls using OLS.
+
+        Fixed effects and always-include controls must be included in fe_matrix.
+        The constant is always removed so downstream Lasso fits can consistently
+        use fit_intercept=False.
         Logic follows from Frisch-Waugh-Lovell.
         Values may be a matrix or vector (DataFrame, Series, or ndarray).
         """
-        if fe_matrix is None:
-            return values
-        fe_design = sm.add_constant(fe_matrix, has_constant="add")
-        design = fe_design.to_numpy()
-        
         # convert values to numpy array with correct shape for least squares
         if isinstance(values, pd.Series):
             y_mat = values.to_numpy().reshape(-1, 1)
@@ -249,10 +247,15 @@ class PDSLasso:
             y_mat = np.asarray(values)
             if y_mat.ndim == 1:
                 y_mat = y_mat.reshape(-1, 1)
-                
+
+        if fe_matrix is None:
+            design = np.ones((y_mat.shape[0], 1))
+        else:
+            design = sm.add_constant(fe_matrix, has_constant="add").to_numpy()
+
         coef, _, _, _ = np.linalg.lstsq(design, y_mat, rcond=None)
         resid = y_mat - design @ coef
-        
+
         # return residuals in same format as input values
         if isinstance(values, pd.Series):
             return pd.Series(resid.ravel(), index=values.index, name=values.name)
@@ -286,7 +289,7 @@ class PDSLasso:
         y_vec: np.ndarray,
         selected_idx: np.ndarray,
     ) -> np.ndarray:
-        """Compute post-Lasso residuals without intercept on selected controls."""
+        """Compute residuals from inputs already residualized on a constant."""
         if selected_idx.size == 0:
             return y_vec
         X_sel = X_ctrl[:, selected_idx]
@@ -308,12 +311,9 @@ class PDSLasso:
         if n_ctrl == 0:
             return Lasso(alpha=0.0), []
 
-        # initialize loadings using residualized y
-        # To-Do: check whether this makes sense? I think it works but only if we have some residualisation
-        # do we need to specially handle the case with no fixed effects or always-include controls? 
-        # In that case we would just be using the raw y, which seems wrong. 
-        # Instead simply "partial out" a constant?
-        # What does Belloni et al suggest as initial set of loadings?
+        # Inputs are residualized on a constant and any non-penalized controls.
+        # The empty initial model on these residualized inputs therefore needs no
+        # additional intercept.
         loadings = np.sqrt(np.mean((X_mat ** 2) * (y_arr[:, None] ** 2), axis=0))
         loadings = np.maximum(loadings, self.feasible_lasso_eps)
 
