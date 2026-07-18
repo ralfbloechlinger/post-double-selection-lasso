@@ -133,6 +133,24 @@ def test_outcome_and_treatment_must_be_distinct():
     )
 
 
+def test_outcome_in_candidate_controls_raises():
+    """Outcome leakage into the selection and final designs is rejected."""
+    df = pd.DataFrame({
+        "y": [1.0, 2.0, 3.0, 4.0],
+        "dose": [0.0, 1.0, 0.0, 1.0],
+        "x0": [1.0, 2.0, 3.0, 4.0],
+    })
+    assert_raises(
+        ValueError,
+        PDSLasso,
+        data=df,
+        y="y",
+        d="dose",
+        control_cols=["x0", "y"],
+        match="control_cols cannot contain outcome column 'y'",
+    )
+
+
 def test_treatment_in_candidate_controls_raises():
     """Treatment cannot enter either side of its own selection equation."""
     df = pd.DataFrame({

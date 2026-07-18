@@ -84,8 +84,13 @@ Treatment data are validated when `fit()` is called and converted on an
 internal Series; the input DataFrame is not modified. The treatment must retain
 variation after partialling out fixed effects and always-included controls, and
 it must be identified in the final regression design. The outcome and treatment
-must be distinct, and the treatment must not also be listed in `control_cols`,
-`control_always_include`, or `fixed_effect_col`.
+must be distinct. Neither may also be listed in `control_cols`, and the
+treatment must not be listed in `control_always_include` or `fixed_effect_col`.
+
+`selected_controls` follows the order supplied in `control_cols`. Always-
+included controls not listed there are appended in their supplied order. Each
+control appears at most once, so final-regression parameter ordering is stable
+across runs.
 
 When `cluster_cov` is provided, it overrides `cov_type` for the final OLS
 regression. The cluster column must exist, contain no missing identifiers, and

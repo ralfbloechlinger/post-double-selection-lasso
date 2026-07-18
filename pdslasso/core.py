@@ -102,8 +102,9 @@ class PDSLasso:
             y: Column name for the outcome variable.
             d: Column name for a binary or continuous treatment variable. The
                 column must contain finite real numeric or Boolean values.
-            control_cols: Column names for candidate controls. If None, fit OLS
-                with only the treatment variable.
+            control_cols: Column names for candidate controls. The outcome and
+                treatment columns cannot be included. If None, fit OLS with
+                only the treatment variable.
             control_always_include: Column names for controls that should always be
                 included in the final OLS step (I3 in the paper) and partialed
                 out in the Lasso steps. A single column name can be passed as a
@@ -159,6 +160,10 @@ class PDSLasso:
         # checks on column names and overlaps
         if self.y == self.d:
             raise ValueError("Outcome and treatment columns must be distinct.")
+        if self.control_cols is not None and self.y in self.control_cols:
+            raise ValueError(
+                f"control_cols cannot contain outcome column {self.y!r}."
+            )
         if self.control_cols is not None and self.d in self.control_cols:
             raise ValueError(
                 f"control_cols cannot contain treatment column {self.d!r}."
@@ -188,6 +193,23 @@ class PDSLasso:
         d_vec = self.data[self.d]
         X_ctrl = None if self.control_cols is None else self.data[self.control_cols]
         return PDSData(y=y_vec, d=d_vec, X=X_ctrl)
+
+    def _ordered_selected_controls(
+        self,
+        selected_cols_d_on_X: list[str],
+        selected_cols_y_on_X: list[str],
+    ) -> list[str]:
+        """Return the selected-control union in stable user-supplied order."""
+        selected = set(
+            selected_cols_d_on_X
+            + selected_cols_y_on_X
+            + self.control_always_include
+        )
+        ordered_candidates = [] if self.control_cols is None else self.control_cols
+        ordered_pool = ordered_candidates + self.control_always_include
+        return list(
+            dict.fromkeys(col for col in ordered_pool if col in selected)
+        )
 
     def _validate_treatment(self) -> pd.Series:
         """Return treatment as floats after validating its data contract."""
@@ -484,7 +506,7 @@ class PDSLasso:
 
         # no controls => simple OLS
         if self.control_cols is None:
-            selected_conts = control_always_include
+            selected_conts = self._ordered_selected_controls([], [])
             selected_vars = [self.d] + selected_conts
 
         else:
@@ -521,8 +543,12 @@ class PDSLasso:
             self.first_stage_lasso = lasso_1
             self.second_stage_lasso = lasso_2 
 
-            # selected controls as union of both sets of controls
-            selected_conts = list(set(selected_cols_d_on_X + selected_cols_y_on_X + control_always_include))
+            # Preserve candidate-control order, then append always-included
+            # controls that were not listed as candidates.
+            selected_conts = self._ordered_selected_controls(
+                selected_cols_d_on_X,
+                selected_cols_y_on_X,
+            )
             selected_vars = [self.d] + selected_conts
 
         # final matrix of X: variable of interest plus selected contrs

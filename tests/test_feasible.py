@@ -172,7 +172,40 @@ def test_empty_lasso_cols_keeps_always_include() -> None:
         control_always_include=["x0", "x1"],
     )
     model.fit()
-    assert set(model.selected_controls) == {"x0", "x1"}
+    assert model.selected_controls == ["x0", "x1"]
+
+
+def test_selected_controls_preserve_input_order(monkeypatch) -> None:
+    rng = np.random.default_rng(20260718)
+    n = 100
+    df = pd.DataFrame({
+        "x3": rng.normal(size=n),
+        "x1": rng.normal(size=n),
+        "x2": rng.normal(size=n),
+        "z": rng.normal(size=n),
+    })
+    df["d"] = 0.6 * df["x3"] + rng.normal(size=n)
+    df["y"] = 1.5 * df["d"] + 0.4 * df["x2"] + rng.normal(size=n)
+    model = PDSLasso(
+        data=df,
+        y="y",
+        d="d",
+        control_cols=["x3", "x1", "x2"],
+        control_always_include=["x1", "z"],
+    )
+    stage_selections = iter([
+        ["x2", "x3"],
+        ["x3"],
+    ])
+
+    def fake_run_lasso(*, X_ctrl, y_vec, feature_names):
+        return None, next(stage_selections)
+
+    monkeypatch.setattr(model, "_run_lasso", fake_run_lasso)
+    result = model.fit()
+
+    assert model.selected_controls == ["x3", "x1", "x2", "z"]
+    assert list(result.params.index) == ["const", "d", "x3", "x1", "x2", "z"]
 
 
 def test_scaling_invariance_selection_and_coef() -> None:
